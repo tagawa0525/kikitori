@@ -2,7 +2,8 @@
 //!
 //! モデルは起動時に読み込んで常駐する（クライアントはトグル時に接続する
 //! だけなので、モデル読み込みとキャプチャの順序問題が構造的に起きない）。
-//! v0 は接続を 1 本ずつ順次処理する（クライアントは自分たちのみのため）。
+//! 接続 = セッションとして並行に処理し、無音が続いたセッションは
+//! タイムアウトで打ち切る（切り忘れ対策）。
 
 use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -84,6 +85,12 @@ fn main() {
     let _ = std::fs::remove_file(&args.socket);
     let listener = UnixListener::bind(&args.socket)
         .unwrap_or_else(|e| panic!("{} に bind できない: {e}", args.socket.display()));
+    // ローカル IPC 前提でも他ユーザーからの接続は絞る
+    // （XDG_RUNTIME_DIR が無く ~/.cache へフォールバックした場合への備え）
+    let _ = std::fs::set_permissions(
+        &args.socket,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    );
     eprintln!("listening: {}", args.socket.display());
 
     // 接続 = セッション。全接続を同一に扱い、main は共有状態を持たない。
@@ -163,6 +170,14 @@ fn handle(
                     writer.flush()?;
                     continue;
                 };
+                if frame.payload.len() % 2 != 0 {
+                    let payload =
+                        serde_json::json!({ "message": "AUDIO は s16le（偶数バイト）が必要" })
+                            .to_string();
+                    write_frame(&mut writer, proto::ERROR, payload.as_bytes())?;
+                    writer.flush()?;
+                    continue;
+                }
                 let samples: Vec<f32> = frame
                     .payload
                     .chunks_exact(2)

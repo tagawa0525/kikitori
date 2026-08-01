@@ -1,10 +1,9 @@
 //! kikitori クライアント: マイク → エンジン → 画面下部バーに逐次表示 →
 //! 停止時に wtype 入力（Windows の「聞き取りバー」方式）。
 //!
-//! v0 は表示のみの検証用マイルストーン（確定入力は kikitori-cli --wtype で）。
 //! keyboard_interactivity は None にして、入力先アプリのフォーカスを奪わない。
 //!
-//! 実行: kikitori-overlay [--socket PATH]（kikitorid が起動済みであること）
+//! 実行: kikitori [--socket PATH]（kikitorid が起動済みであること）
 //! スポーン型: 1 回目の起動が録音セッション、2 回目の起動は停止指示
 //! （制御ソケット接続）。停止時は確定テキストを wtype で入力して終了する。
 
