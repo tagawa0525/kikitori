@@ -32,6 +32,7 @@ import argparse
 import re
 import time
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -289,7 +290,15 @@ def save_wav(path: str, samples: np.ndarray) -> None:
     print(f"録音を保存: {path} ({len(samples) / SAMPLE_RATE:.1f}s)")
 
 
-def run_mic(segmenter: Segmenter, device: int | str | None, save: str | None) -> None:
+def run_mic(
+    build: Callable[[], Segmenter], device: int | str | None, save: str | None
+) -> None:
+    """マイクの取得はモデルの読み込みより先に始める。
+
+    順序を逆にすると、読み込み中（数百 ms〜数秒）に話した分は録音自体が
+    存在せず、あとから復元できない。実際に先頭が欠落する事象が観測された。
+    デーモン化後も、トグルを受けてからモデルを触るのではなく、
+    先にキャプチャを開始すること。"""
     chunks: list[np.ndarray] = []
 
     def on_audio(indata, frames, t, status) -> None:
@@ -303,7 +312,14 @@ def run_mic(segmenter: Segmenter, device: int | str | None, save: str | None) ->
         callback=on_audio,
     ) as mic:
         print(f"入力: {sd.query_devices(mic.device)['name']}")
-        print("話してください（Ctrl+C で終了）。確定した文は上の行に積まれます\n")
+        print("録音開始。話し始めて構いません（モデル読み込み中…）")
+        t0 = time.monotonic()
+        segmenter = build()
+        buffered = sum(len(c) for c in chunks) / SAMPLE_RATE
+        print(
+            f"読み込み完了 {time.monotonic() - t0:.1f}s"
+            f"（その間の {buffered:.1f}s も認識対象）。Ctrl+C で終了\n"
+        )
         next_decode = time.monotonic() + STEP_SECS
         try:
             while True:
@@ -356,11 +372,14 @@ def main() -> None:
 
     params = Params(**{f.name: getattr(args, f.name) for f in fields(Params)})
     builder = sensevoice if args.model == "sensevoice" else zipformer
-    segmenter = Segmenter(params, recognizer=builder(args.threads))
+
+    def build() -> Segmenter:
+        return Segmenter(params, recognizer=builder(args.threads))
+
     if args.wav:
-        run_wav(segmenter, args.wav, verbose=not args.quiet)
+        run_wav(build(), args.wav, verbose=not args.quiet)
     else:
-        run_mic(segmenter, parse_device(args.device), args.save)
+        run_mic(build, parse_device(args.device), args.save)
 
 
 if __name__ == "__main__":
