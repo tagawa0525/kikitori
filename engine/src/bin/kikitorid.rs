@@ -5,11 +5,11 @@
 //! v0 は接続を 1 本ずつ順次処理する（クライアントは自分たちのみのため）。
 
 use std::io::{BufReader, BufWriter, Write};
-use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use kikitori_engine::audio::is_speech;
 use kikitori_engine::replace::Replacer;
 use kikitori_engine::segmenter::{sensevoice, Params, Segmenter, SenseVoicePaths, SAMPLE_RATE};
 use kikitori_proto::{self as proto, read_frame, write_frame};
@@ -25,6 +25,7 @@ struct Args {
     vad_model: String,
     replace_file: PathBuf,
     threads: i32,
+    idle_timeout_secs: u64,
 }
 
 fn parse_args() -> Args {
@@ -37,6 +38,7 @@ fn parse_args() -> Args {
         vad_model: "models/silero_vad.onnx".into(),
         replace_file: PathBuf::from(format!("{config_dir}/kikitori/replace.tsv")),
         threads: 16,
+        idle_timeout_secs: 120,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -47,6 +49,9 @@ fn parse_args() -> Args {
             "--vad-model" => args.vad_model = value(),
             "--replace" => args.replace_file = PathBuf::from(value()),
             "--threads" => args.threads = value().parse().expect("--threads は整数"),
+            "--idle-timeout" => {
+                args.idle_timeout_secs = value().parse().expect("--idle-timeout は秒数")
+            }
             _ => panic!("未知の引数: {arg}"),
         }
     }
@@ -81,17 +86,13 @@ fn main() {
         .unwrap_or_else(|e| panic!("{} に bind できない: {e}", args.socket.display()));
     eprintln!("listening: {}", args.socket.display());
 
-    // セッションは常に 1 本、ただし最新の接続を優先する。
-    // 切り忘れたクライアントが残っていても、次のトグル（新しい接続）が
-    // 先行セッションを蹴って進める。蹴られた側はソケット切断を検知して
-    // 自分で終了する（無言でブロックさせない）
+    // 接続 = セッション。全接続を同一に扱い、main は共有状態を持たない。
+    // 以前は「最新接続が先行セッションを蹴る」preemption を実装したが、
+    // その調整機構（Weak 保持・shutdown・join）自体が追加の状態であり、
+    // 実際に fd リークによるデッドロックを生んだため撤去した（ユーザー指摘）。
+    // 切り忘れセッションは無音タイムアウトが回収する
     let recognizer = Arc::new(recognizer);
     let replacer = Arc::new(replacer);
-    // 注意: 接続の強いクローンを main が持ち続けてはいけない。セッション
-    // スレッド終了後もソケットが開いたままになり、クライアントが EOF を
-    // 待って永遠にブロックする（実際に起きた）。Weak で持ち、締める時だけ
-    // upgrade する
-    let mut current: Option<(std::sync::Weak<UnixStream>, std::thread::JoinHandle<()>)> = None;
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(s) => s,
@@ -100,28 +101,18 @@ fn main() {
                 continue;
             }
         };
-        if let Some((old, join)) = current.take() {
-            if let Some(peer) = old.upgrade() {
-                eprintln!("新しい接続が来たため先行セッションを終了する");
-                let _ = peer.shutdown(Shutdown::Both);
-            }
-            let _ = join.join(); // decode の同時実行はさせない（完全に直列）
-        }
-        let peer = Arc::new(stream.try_clone().expect("ソケット複製に失敗"));
-        let weak = Arc::downgrade(&peer);
         let recognizer = recognizer.clone();
         let replacer = replacer.clone();
         let vad_model = args.vad_model.clone();
-        let join = std::thread::spawn(move || {
-            let _closer = peer; // スレッド終了と同時にクローンも閉じる
-            if let Err(e) = handle(stream, &recognizer, &vad_model, &replacer) {
-                // 切断は正常系（クライアントが閉じた / 蹴られた）
+        let idle_timeout = args.idle_timeout_secs;
+        std::thread::spawn(move || {
+            if let Err(e) = handle(stream, &recognizer, &vad_model, &replacer, idle_timeout) {
+                // 切断は正常系（クライアントが閉じただけ）
                 if e.kind() != std::io::ErrorKind::UnexpectedEof {
                     eprintln!("接続エラー: {e}");
                 }
             }
         });
-        current = Some((weak, join));
     }
 }
 
@@ -136,11 +127,17 @@ fn handle(
     recognizer: &OfflineRecognizer,
     vad_model: &str,
     replacer: &Replacer,
+    idle_timeout_secs: u64,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
     let mut segmenter: Option<Segmenter> = None;
     let mut next_partial_at = PARTIAL_EVERY_SAMPLES;
+    // 無音タイムアウト: 切り忘れセッションの回収。STOPPED は送らず接続を
+    // 閉じるだけにする（クライアントは切断検知で入力せずに終了するため、
+    // 放置後にフォーカス先へ誤入力する事故が構造的に起きない）
+    let idle_limit_samples = idle_timeout_secs as usize * SAMPLE_RATE;
+    let mut silent_samples: usize = 0;
 
     loop {
         let frame = read_frame(&mut reader)?;
@@ -157,6 +154,7 @@ fn handle(
             proto::START => {
                 segmenter = Some(Segmenter::new(recognizer, vad_model, &Params::default()));
                 next_partial_at = PARTIAL_EVERY_SAMPLES;
+                silent_samples = 0;
             }
             proto::AUDIO => {
                 let Some(seg) = segmenter.as_mut() else {
@@ -170,6 +168,15 @@ fn handle(
                     .chunks_exact(2)
                     .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
                     .collect();
+                if is_speech(&samples) {
+                    silent_samples = 0;
+                } else {
+                    silent_samples += samples.len();
+                    if idle_limit_samples > 0 && silent_samples > idle_limit_samples {
+                        eprintln!("無音 {idle_timeout_secs} 秒でセッションを打ち切る");
+                        return Ok(());
+                    }
+                }
                 for text in seg.push(&samples) {
                     send_text(&mut writer, proto::COMMIT, &replacer.apply(&text))?;
                 }
