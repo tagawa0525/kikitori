@@ -30,7 +30,7 @@ pub fn parse_endpoint(value: &str) -> Endpoint {
 pub struct Connection {
     pub reader: Box<dyn Read + Send>,
     pub writer: Box<dyn Write + Send>,
-    shutdown: Box<dyn Fn() -> std::io::Result<()> + Send>,
+    pub shutdown: Box<dyn Fn() -> std::io::Result<()> + Send>,
 }
 
 impl Connection {
@@ -57,10 +57,6 @@ impl Connection {
                 })
             }
         }
-    }
-
-    pub fn shutdown_write(&self) -> std::io::Result<()> {
-        (self.shutdown)()
     }
 }
 

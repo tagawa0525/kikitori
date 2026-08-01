@@ -5,8 +5,8 @@
 //! 接続 = セッションとして並行に処理し、無音が続いたセッションは
 //! タイムアウトで打ち切る（切り忘れ対策）。
 
-use std::io::{BufReader, BufWriter, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -27,6 +27,9 @@ struct Args {
     replace_file: PathBuf,
     threads: i32,
     idle_timeout_secs: u64,
+    /// 例: 0.0.0.0:41717。LAN 内の別マシン（x1ng1 等）からエンジンを使う。
+    /// 認証は持たないため、信頼できる LAN / SSH トンネル / Tailscale 前提
+    tcp: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -40,6 +43,7 @@ fn parse_args() -> Args {
         replace_file: PathBuf::from(format!("{config_dir}/kikitori/replace.tsv")),
         threads: 16,
         idle_timeout_secs: 120,
+        tcp: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -53,6 +57,7 @@ fn parse_args() -> Args {
             "--idle-timeout" => {
                 args.idle_timeout_secs = value().parse().expect("--idle-timeout は秒数")
             }
+            "--tcp" => args.tcp = Some(value()),
             _ => panic!("未知の引数: {arg}"),
         }
     }
@@ -100,27 +105,84 @@ fn main() {
     // 切り忘れセッションは無音タイムアウトが回収する
     let recognizer = Arc::new(recognizer);
     let replacer = Arc::new(replacer);
-    for stream in listener.incoming() {
-        let stream = match stream {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("accept 失敗: {e}");
-                continue;
-            }
-        };
-        let recognizer = recognizer.clone();
-        let replacer = replacer.clone();
-        let vad_model = args.vad_model.clone();
-        let idle_timeout = args.idle_timeout_secs;
+    let ctx = Arc::new(SessionCtx {
+        recognizer,
+        replacer,
+        vad_model: args.vad_model.clone(),
+        idle_timeout_secs: args.idle_timeout_secs,
+    });
+
+    if let Some(addr) = args.tcp.clone() {
+        let ctx = ctx.clone();
         std::thread::spawn(move || {
-            if let Err(e) = handle(stream, &recognizer, &vad_model, &replacer, idle_timeout) {
-                // 切断は正常系（クライアントが閉じただけ）
-                if e.kind() != std::io::ErrorKind::UnexpectedEof {
-                    eprintln!("接続エラー: {e}");
+            let listener = std::net::TcpListener::bind(&addr)
+                .unwrap_or_else(|e| panic!("{addr} に bind できない: {e}"));
+            eprintln!("listening (tcp): {addr}");
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(s) => {
+                        let _ = s.set_nodelay(true); // PARTIAL の遅延を抑える
+                        let reader = match s.try_clone() {
+                            Ok(r) => r,
+                            Err(e) => {
+                                eprintln!("ソケット複製に失敗: {e}");
+                                continue;
+                            }
+                        };
+                        spawn_session(ctx.clone(), reader, s);
+                    }
+                    Err(e) => eprintln!("accept 失敗 (tcp): {e}"),
                 }
             }
         });
     }
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(s) => {
+                let reader = match s.try_clone() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("ソケット複製に失敗: {e}");
+                        continue;
+                    }
+                };
+                spawn_session(ctx.clone(), reader, s);
+            }
+            Err(e) => eprintln!("accept 失敗: {e}"),
+        }
+    }
+}
+
+struct SessionCtx {
+    recognizer: Arc<OfflineRecognizer>,
+    replacer: Arc<Replacer>,
+    vad_model: String,
+    idle_timeout_secs: u64,
+}
+
+/// トランスポート非依存のセッション起動（Unix / TCP 共通）
+fn spawn_session(
+    ctx: Arc<SessionCtx>,
+    reader: impl Read + Send + 'static,
+    writer: impl Write + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        let result = handle(
+            BufReader::new(reader),
+            BufWriter::new(writer),
+            &ctx.recognizer,
+            &ctx.vad_model,
+            &ctx.replacer,
+            ctx.idle_timeout_secs,
+        );
+        if let Err(e) = result {
+            // 切断は正常系（クライアントが閉じただけ）
+            if e.kind() != std::io::ErrorKind::UnexpectedEof {
+                eprintln!("接続エラー: {e}");
+            }
+        }
+    });
 }
 
 fn send_text(w: &mut impl Write, kind: u8, text: &str) -> std::io::Result<()> {
@@ -130,14 +192,13 @@ fn send_text(w: &mut impl Write, kind: u8, text: &str) -> std::io::Result<()> {
 }
 
 fn handle(
-    stream: UnixStream,
+    mut reader: impl Read,
+    mut writer: impl Write,
     recognizer: &OfflineRecognizer,
     vad_model: &str,
     replacer: &Replacer,
     idle_timeout_secs: u64,
 ) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut writer = BufWriter::new(stream);
     let mut segmenter: Option<Segmenter> = None;
     let mut next_partial_at = PARTIAL_EVERY_SAMPLES;
     // 無音タイムアウト: 切り忘れセッションの回収。STOPPED は送らず接続を

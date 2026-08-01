@@ -216,7 +216,14 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
    切断検知で入力せずに終了するため、放置後にフォーカス先へ誤入力する事故が
    構造的に起きない。無音は壁時計ではなく音声内容（is_speech）で数える。
    検証: 並行 2 セッションの同時完走、3 秒設定での打ち切りを確認済み
-8. [ ] **TCP トランスポート**: x1ng1 等から r995 のエンジンを使う（§8.0）
+8. [x] **TCP トランスポート**: kikitorid `--tcp addr:port`（HM モジュールでは
+   `services.kikitori.tcp`）で LAN にも listen。クライアントは
+   `--socket host:port` か環境変数 `KIKITORI_ENGINE` で接続先を指定
+   （`/` 始まりは Unix パス、`:` を含めば TCP）。Unix と TCP で wav E2E の
+   出力が完全一致することを確認済み。認証はトランスポート外
+   （信頼できる LAN / SSH トンネル / Tailscale 前提）。
+   nixfiles 側の残作業: r995 で tcp を有効化 + firewall 開放、
+   x1ng1 / t14g4 に KIKITORI_ENGINE=r995:41717 を設定
 9. [ ] **配布**: flake 化（パッケージ + Home Manager モジュール or
    ショートカット差し替え手順）、systemd ユーザーサービス、
    nixfiles への input 追加（qmpo / cc-bar と同じパターン）。

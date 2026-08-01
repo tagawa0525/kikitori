@@ -8,7 +8,6 @@
 //! （制御ソケット接続）。停止時は確定テキストを wtype で入力して終了する。
 
 use std::io::{BufReader, BufWriter, Write as _};
-use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -23,6 +22,16 @@ use kikitori_proto::{self as proto, read_frame, write_frame};
 
 const TARGET_RATE: u32 = 16_000;
 const BAR_HEIGHT: u32 = 76;
+
+fn engine_endpoint(cli: Option<String>) -> kikitori_proto::endpoint::Endpoint {
+    let value = cli
+        .or_else(|| std::env::var("KIKITORI_ENGINE").ok())
+        .unwrap_or_else(|| {
+            let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
+            format!("{dir}/kikitori.sock")
+        });
+    kikitori_proto::endpoint::parse_endpoint(&value)
+}
 
 fn ctl_path() -> String {
     let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
@@ -166,7 +175,7 @@ fn engine_stream() -> impl futures::Stream<Item = Message> {
 fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     let events = EventSender(sender);
     let status = |s: &str| events.send(EngineEvent::Status(s.into()));
-    let socket = {
+    let endpoint = engine_endpoint({
         let mut args = std::env::args().skip(1);
         let mut path = None;
         while let Some(a) = args.next() {
@@ -174,11 +183,8 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
                 path = args.next();
             }
         }
-        path.unwrap_or_else(|| {
-            let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
-            format!("{dir}/kikitori.sock")
-        })
-    };
+        path
+    });
 
     // キャプチャを先に開始（HANDOFF §4 の教訓）
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
@@ -215,15 +221,15 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         .expect("入力ストリームを開けない");
     stream.play().expect("キャプチャ開始に失敗");
 
-    let conn = match UnixStream::connect(&socket) {
+    let conn = match kikitori_proto::endpoint::Connection::connect(&endpoint) {
         Ok(c) => c,
         Err(e) => {
-            status(&format!("エンジンに接続できない: {e}"));
+            status(&format!("エンジン {endpoint:?} に接続できない: {e}"));
             return;
         }
     };
-    let mut writer = BufWriter::new(conn.try_clone().unwrap());
-    let mut reader = BufReader::new(conn);
+    let mut writer = BufWriter::new(conn.writer);
+    let mut reader = BufReader::new(conn.reader);
     write_frame(&mut writer, proto::HELLO, br#"{"version":0}"#).unwrap();
     write_frame(&mut writer, proto::START, b"{}").unwrap();
     writer.flush().unwrap();

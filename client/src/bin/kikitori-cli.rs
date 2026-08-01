@@ -8,7 +8,6 @@
 //! 遅延中に話した分を取りこぼさないため。docs/HANDOFF.md §4 の教訓）。
 
 use std::io::{BufReader, BufWriter, Write as _};
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -19,20 +18,28 @@ use kikitori_proto::{self as proto, read_frame, write_frame};
 
 const TARGET_RATE: u32 = 16_000;
 
+fn engine_endpoint(cli: Option<String>) -> kikitori_proto::endpoint::Endpoint {
+    let value = cli
+        .or_else(|| std::env::var("KIKITORI_ENGINE").ok())
+        .unwrap_or_else(|| {
+            let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
+            format!("{dir}/kikitori.sock")
+        });
+    kikitori_proto::endpoint::parse_endpoint(&value)
+}
+
 fn main() {
-    let mut socket = {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
-        format!("{runtime_dir}/kikitori.sock")
-    };
+    let mut socket = None;
     let mut use_wtype = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--socket" => socket = it.next().expect("--socket の値"),
+            "--socket" => socket = Some(it.next().expect("--socket の値")),
             "--wtype" => use_wtype = true,
             _ => panic!("未知の引数: {arg}"),
         }
     }
+    let endpoint = engine_endpoint(socket);
 
     // ---- キャプチャを先に開始（モデルやソケットより前） ----
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
@@ -70,11 +77,11 @@ fn main() {
     );
 
     // ---- デーモン接続 ----
-    let conn = UnixStream::connect(&socket).unwrap_or_else(|e| {
-        panic!("エンジン {socket} に接続できない: {e}（kikitorid は起動済みか）")
+    let conn = kikitori_proto::endpoint::Connection::connect(&endpoint).unwrap_or_else(|e| {
+        panic!("エンジン {endpoint:?} に接続できない: {e}（kikitorid は起動済みか）")
     });
-    let mut writer = BufWriter::new(conn.try_clone().unwrap());
-    let reader = BufReader::new(conn.try_clone().unwrap());
+    let mut writer = BufWriter::new(conn.writer);
+    let reader = BufReader::new(conn.reader);
     write_frame(&mut writer, proto::HELLO, br#"{"version":0}"#).unwrap();
     write_frame(&mut writer, proto::START, b"{}").unwrap();
     writer.flush().unwrap();

@@ -2,7 +2,6 @@
 //! COMMIT の連結を `ファイル名\tテキスト` で出力する（parity と同形式）。
 
 use std::io::{BufReader, BufWriter, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use kikitori_engine::segmenter::SAMPLE_RATE;
@@ -22,9 +21,12 @@ fn main() {
     };
     assert!(!args.is_empty(), "wav ファイルを指定してください");
 
-    let stream = UnixStream::connect(&socket).expect("エンジンに接続できない");
-    let mut writer = BufWriter::new(stream.try_clone().unwrap());
-    let reader = BufReader::new(stream);
+    let endpoint = kikitori_proto::endpoint::parse_endpoint(&socket);
+    let conn =
+        kikitori_proto::endpoint::Connection::connect(&endpoint).expect("エンジンに接続できない");
+    let mut writer = BufWriter::new(conn.writer);
+    let reader = BufReader::new(conn.reader);
+    let shutdown = conn.shutdown;
 
     // 受信は別スレッド（送信だけ先行してソケットバッファが詰まると
     // 双方 write でデッドロックするため）
@@ -44,11 +46,9 @@ fn main() {
     }
     // write 方向を閉じてサーバに EOF を伝える。これがないと受信スレッドが
     // 最後の STOPPED の後も次のフレームを待ち続け、join が返らない
-    writer
-        .into_inner()
-        .unwrap()
-        .shutdown(std::net::Shutdown::Write)
-        .unwrap();
+    writer.flush().unwrap();
+    drop(writer);
+    shutdown().unwrap();
 
     let sessions = receiver.join().unwrap();
     assert_eq!(
