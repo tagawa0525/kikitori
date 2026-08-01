@@ -186,12 +186,20 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
    - [x] iced オーバーレイ `kikitori-overlay`（iced 0.14 +
      iced_layershell 0.19、ビルド済み）。画面下部の固定バーに部分/確定を
      逐次表示、keyboard_interactivity=None でフォーカスを奪わない。
-     **COSMIC での実描画はユーザー確認待ち**
+     **COSMIC での実描画をユーザー確認済み（2026-08-02）**。
+     iced_layershell 続行で確定、smithay 直実装への切替は不要
+   - 既知の未解決: ユーザー環境でデーモンが一度 SIGSEGV
+     （listening 後、接続/認識中）。手元では wav 6 セッションで再現せず。
+     再発したら `coredumpctl info kikitorid` でバックトレースを取ること
    - [x] 置換辞書: エンジン側で確定・部分の両方に適用
      （`~/.config/kikitori/replace.tsv`、例は docs/replace.example.tsv、
      `--replace` で上書き）。wav 経由で「ポドマン→Podman」の適用を確認済み
-   - [ ] トグル（ショートカット → 録音開始/停止 → wtype 確定入力を
-     オーバーレイに統合）
+   - [ ] トグル統合（次の実装対象）。設計:
+     オーバーレイを常駐化し、制御ソケット（例: kikitori-ctl.sock）で
+     `kikitori toggle` CLI から開始/停止を受ける。開始でエンジンに START、
+     停止で STOP → STOPPED まで受けて wtype 入力 → バーを隠す。
+     COSMIC の Super+V には voice-input.nix の Spawn コマンドを
+     `kikitori toggle` に差し替えるだけ（§2 の想定どおり）
 8. [ ] **TCP トランスポート**: x1ng1 等から r995 のエンジンを使う（§8.0）
 9. [ ] **配布**: flake 化（パッケージ + Home Manager モジュール or
    ショートカット差し替え手順）、systemd ユーザーサービス、
