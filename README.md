@@ -24,21 +24,21 @@ curl -L -o models/silero_vad.onnx \
 # ファイル逐次デコード（遅延・安定性計測）
 nix shell --impure --expr \
   'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
-  -c python3 poc_incremental.py models/sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01/test_wavs/1.wav
+  -c python3 poc/poc_incremental.py models/sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01/test_wavs/1.wav
 
 # マイク体感テスト（VAD セグメント方式・こちらが現行）
 # --list で入力デバイス一覧、--device で選択、--wav で音声ファイルを流す
 nix shell --impure --expr \
   'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
-  -c python3 poc_vad.py
+  -c python3 poc/poc_vad.py
 
 # 構成・モデルの精度比較（CER / RTF）
 nix shell --impure --expr \
   'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
-  -c python3 bench_asr.py
+  -c python3 poc/bench_asr.py
 ```
 
-`poc_mic.py` は全バッファ再デコード方式（無音で確定テキストが壊れる問題あり、
+`poc/poc_mic.py` は全バッファ再デコード方式（無音で確定テキストが壊れる問題あり、
 比較用に残置）。
 
 ## モデル比較 (自分の声 4 本 210 秒、CER)
@@ -52,7 +52,7 @@ nix shell --impure --expr \
 | ReazonSpeech zipformer | 17.0% | 0.017 |
 
 モデル同梱のニュース音声では zipformer が SenseVoice の 3 倍良かったが、
-実際のマイク録音では逆転した。詳細は HANDOFF.md §4。
+実際のマイク録音では逆転した。詳細は docs/HANDOFF.md §4。
 
 ## PoC 計測結果 (r995, 16 threads, 2026-08-01)
 

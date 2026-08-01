@@ -8,7 +8,7 @@
 ```bash
 nix shell --impure --expr \
   'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
-  -c python3 poc_vad.py --save bench_data/voiceN.wav
+  -c python3 poc/poc_vad.py --save bench_data/voiceN.wav
 ```
 
 `prompts-N.txt` を読み上げて Ctrl+C。読み間違えたら、その文を読み直すのではなく
@@ -19,7 +19,7 @@ nix shell --impure --expr \
 ```bash
 nix shell --impure --expr \
   'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
-  -c python3 bench_asr.py bench_data
+  -c python3 poc/bench_asr.py bench_data
 ```
 
 ## 原稿の役割
