@@ -28,11 +28,29 @@ pub struct Frame {
 }
 
 pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
-    todo!()
+    let len = u32::try_from(payload.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "payload が大きすぎる"))?;
+    w.write_all(&len.to_le_bytes())?;
+    w.write_all(&[kind])?;
+    w.write_all(payload)
 }
 
 pub fn read_frame(r: &mut impl Read) -> io::Result<Frame> {
-    todo!()
+    let mut header = [0u8; 5];
+    r.read_exact(&mut header)?;
+    let len = u32::from_le_bytes(header[..4].try_into().unwrap());
+    if len > MAX_PAYLOAD {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("payload 長 {len} が上限 {MAX_PAYLOAD} を超えている"),
+        ));
+    }
+    let mut payload = vec![0u8; len as usize];
+    r.read_exact(&mut payload)?;
+    Ok(Frame {
+        kind: header[4],
+        payload,
+    })
 }
 
 #[cfg(test)]
