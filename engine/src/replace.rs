@@ -12,8 +12,16 @@ pub struct Replacer {
 }
 
 impl Replacer {
-    pub fn parse(_text: &str) -> Self {
-        todo!()
+    pub fn parse(text: &str) -> Self {
+        let rules = text
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .filter_map(|l| {
+                let (from, to) = l.split_once('\t')?;
+                Some((from.to_owned(), to.to_owned()))
+            })
+            .collect();
+        Self { rules }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -24,8 +32,12 @@ impl Replacer {
         self.rules.len()
     }
 
-    pub fn apply(&self, _text: &str) -> String {
-        todo!()
+    pub fn apply(&self, text: &str) -> String {
+        let mut out = text.to_owned();
+        for (from, to) in &self.rules {
+            out = out.replace(from, to);
+        }
+        out
     }
 }
 
