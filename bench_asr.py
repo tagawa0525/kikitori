@@ -44,7 +44,7 @@ def _whisper(name: str, threads: int) -> sherpa_onnx.OfflineRecognizer:
 def _dolphin(threads: int) -> sherpa_onnx.OfflineRecognizer:
     d = MODELS / "sherpa-onnx-dolphin-base-ctc-multi-lang-2025-04-02"
     return sherpa_onnx.OfflineRecognizer.from_dolphin_ctc(
-        model=str(d / "model.int8.onnx"),
+        model=str(d / "model.onnx"),
         tokens=str(d / "tokens.txt"),
         num_threads=threads,
     )
@@ -123,9 +123,10 @@ def load_dataset(data_dir: Path) -> list[tuple[Path, str]]:
             name, _, text = line.partition(" ")
             refs[name] = text.strip()
     items = [(data_dir / name, text) for name, text in refs.items()]
-    missing = [p for p, _ in items if not p.exists()]
-    assert not missing, f"transcript.txt にあるが存在しない wav: {missing}"
-    return sorted(items)
+    missing = [p.name for p, _ in items if not p.exists()]
+    if missing:
+        print(f"未録音のためスキップ: {', '.join(sorted(missing))}\n")
+    return sorted((p, t) for p, t in items if p.exists())
 
 
 def decode_segmented(recognizer, samples: np.ndarray) -> str:
@@ -178,6 +179,7 @@ def main() -> None:
 
         errors = chars = 0
         decode_secs = 0.0
+        per_file = []
         for path, samples, ref in audio:
             t0 = time.monotonic()
             if args.whole:
@@ -191,6 +193,7 @@ def main() -> None:
             e, c = cer(normalize(ref), normalize(hyp))
             errors += e
             chars += c
+            per_file.append((path.name, e / c))
             if args.show:
                 print(f"  {path.name} [{e}/{c}] {hyp}")
 
@@ -199,6 +202,9 @@ def main() -> None:
             f"{name:<24} {errors / chars:>6.2%} {f'{errors}/{chars}':>12} "
             f"{rtf:>7.3f} {decode_secs:>7.2f}s  (load {load_secs:.1f}s)"
         )
+        if len(per_file) > 1:
+            # 調整に使った音声だけ良い＝過学習なので、ファイル別も出す
+            print("      " + "  ".join(f"{n}: {c:.1%}" for n, c in per_file))
 
 
 if __name__ == "__main__":

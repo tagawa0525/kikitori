@@ -1,0 +1,44 @@
+# 精度計測用の音声データ
+
+モデル同梱の `test_wavs` はニュース読み上げで ReazonSpeech に有利すぎるため、
+実使用に近い自分の声で測る。
+
+## 録音のしかた
+
+```bash
+nix shell --impure --expr \
+  'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
+  -c python3 poc_vad.py --save bench_data/voiceN.wav
+```
+
+`prompts-N.txt` を読み上げて Ctrl+C。読み間違えたら、その文を読み直すのではなく
+**`transcript.txt` を実際に読んだ通りに直す**（読み直すと同じ文が二重に入る）。
+
+## 計測
+
+```bash
+nix shell --impure --expr \
+  'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
+  -c python3 bench_asr.py bench_data
+```
+
+## 原稿の役割
+
+| 原稿 | 録音 | 役割 |
+| --- | --- | --- |
+| `prompts-1.txt` | `voice1.wav` | **調整用**。区間長パラメータはこれで決めた |
+| `prompts-2.txt` | `voice2.wav` | **検証用（held-out）**。1 と同傾向・別内容。過学習の確認 |
+| `prompts-3.txt` | `voice3.wav` | 話し方の極端なケース（短文・長文・言い淀み） |
+| `prompts-4.txt` | `voice4.wav` | 実使用（口述筆記）に近い文体 |
+
+パラメータを触ったら **1 だけでなく 2〜4 でも CER を確認する**こと。
+1 でだけ良くなる変更は過学習。
+
+## 原稿を作るときの方針
+
+- 数字は表記揺れ（五十 / 50）が CER を汚すため入れない。英字も同様
+  （数字と英字の扱いは別途、後処理の課題として切り分ける）
+- 「です・ます」の語尾を多く入れる。日本語の語尾は無声化するため
+  VAD に切られやすく、この失敗が実際に観測されている
+- 6 秒を超える文と超えない文の両方を入れる（強制分割の検証）
+- 読点で少し間を空ける箇所を入れる（`min_silence` の検証）
