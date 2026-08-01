@@ -196,14 +196,27 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         return;
     }
     let factor = (rate / TARGET_RATE) as usize;
+    eprintln!(
+        "[overlay] 入力: {} ({channels}ch {rate}Hz)",
+        device
+            .description()
+            .map(|d| d.name().to_owned())
+            .unwrap_or_default()
+    );
+    let mut counter = 0u32;
     let stream = device
         .build_input_stream(
             config.config(),
             move |data: &[f32], _| {
                 let mono = downmix(data, channels);
+                counter += 1;
+                if counter % 100 == 0 {
+                    let rms = (mono.iter().map(|x| x * x).sum::<f32>() / mono.len() as f32).sqrt();
+                    eprintln!("[overlay] 音声 {counter} チャンク目 RMS={rms:.4}");
+                }
                 let _ = audio_tx.send(f32_to_s16le(&downsample(&mono, factor)));
             },
-            |e| eprintln!("キャプチャエラー: {e}"),
+            |e| eprintln!("[overlay] キャプチャエラー: {e}"),
             None,
         )
         .expect("入力ストリームを開けない");
