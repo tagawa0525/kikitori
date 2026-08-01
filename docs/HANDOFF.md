@@ -194,7 +194,7 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
    - [x] 置換辞書: エンジン側で確定・部分の両方に適用
      （`~/.config/kikitori/replace.tsv`、例は docs/replace.example.tsv、
      `--replace` で上書き）。wav 経由で「ポドマン→Podman」の適用を確認済み
-   - [x] トグル統合: `kikitori-overlay toggle`（制御ソケット接続 = トグル。同一バイナリのサブコマンド）。
+   - [x] トグル統合: `kikitori-overlay`（スポーン型: 1 回目の起動=録音開始、2 回目=停止・入力・終了。常駐しない。アイドル時のクライアントメモリはゼロ）。
      開始で START + 溜まった音声破棄、停止で STOP → STOPPED まで受けて
      wtype 入力。実機での動作確認はユーザー待ち。旧設計メモ:
      オーバーレイを常駐化し、制御ソケット（例: kikitori-ctl.sock）で

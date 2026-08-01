@@ -25,16 +25,19 @@ use kikitori_proto::{self as proto, read_frame, write_frame};
 const TARGET_RATE: u32 = 16_000;
 const BAR_HEIGHT: u32 = 76;
 
+fn ctl_path() -> String {
+    let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
+    format!("{dir}/kikitori-ctl.sock")
+}
+
 pub fn main() -> Result<(), iced_layershell::Error> {
-    // `kikitori-overlay toggle` = 常駐中の自分に合図して即終了。
-    // Wayland にはグローバルホットキーが無く、ショートカットはコマンドの
-    // Spawn しかできないため、引き金は別プロセスになる。バイナリは 1 つで良い
-    if std::env::args().nth(1).as_deref() == Some("toggle") {
-        let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
-        std::os::unix::net::UnixStream::connect(format!("{dir}/kikitori-ctl.sock"))
-            .expect("kikitori-overlay が起動していない");
+    // 常駐しないスポーン型: 1 回目の起動が録音セッションそのもの。
+    // 2 回目の起動は先行インスタンスに合図（=停止）して即終了する。
+    // エンジンが常駐なので、クライアントを残しておく理由がない
+    if std::os::unix::net::UnixStream::connect(ctl_path()).is_ok() {
         return Ok(());
     }
+    let _ = std::fs::remove_file(ctl_path()); // 異常終了の残骸
     application(App::default, namespace, update, view)
         .style(style)
         .subscription(subscription)
@@ -205,7 +208,6 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         )
         .expect("入力ストリームを開けない");
     stream.play().expect("キャプチャ開始に失敗");
-    status("待機中（kikitori-toggle で開始）");
 
     let conn = match UnixStream::connect(&socket) {
         Ok(c) => c,
@@ -219,6 +221,8 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     write_frame(&mut writer, proto::HELLO, br#"{"version":0}"#).unwrap();
     write_frame(&mut writer, proto::START, b"{}").unwrap();
     writer.flush().unwrap();
+    events.send(EngineEvent::Recording(true));
+    status("録音中…");
 
     // 受信スレッド
     {
@@ -256,14 +260,11 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
                         let st = std::process::Command::new("wtype").arg(&text).status();
                         eprintln!("[overlay] wtype 結果: {st:?}");
                         let ok = st.map(|s| s.success()).unwrap_or(false);
-                        events.send(EngineEvent::Status(if ok {
-                            "入力しました（kikitori-toggle で再開）".into()
-                        } else {
-                            "wtype 失敗".into()
-                        }));
-                    } else {
-                        events.send(EngineEvent::Status("待機中".into()));
+                        if !ok {
+                            eprintln!("[overlay] wtype 失敗");
+                        }
                     }
+                    std::process::exit(0);
                 }
                 _ => {}
             }
