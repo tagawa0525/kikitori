@@ -187,8 +187,11 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
      iced_layershell 0.19、ビルド済み）。画面下部の固定バーに部分/確定を
      逐次表示、keyboard_interactivity=None でフォーカスを奪わない。
      **COSMIC での実描画はユーザー確認待ち**
+   - [x] 置換辞書: エンジン側で確定・部分の両方に適用
+     （`~/.config/kikitori/replace.tsv`、例は docs/replace.example.tsv、
+     `--replace` で上書き）。wav 経由で「ポドマン→Podman」の適用を確認済み
    - [ ] トグル（ショートカット → 録音開始/停止 → wtype 確定入力を
-     オーバーレイに統合）。置換辞書（実地テストで最優先と判明）もここで
+     オーバーレイに統合）
 8. [ ] **TCP トランスポート**: x1ng1 等から r995 のエンジンを使う（§8.0）
 9. [ ] **配布**: flake 化（パッケージ + Home Manager モジュール or
    ショートカット差し替え手順）、systemd ユーザーサービス、

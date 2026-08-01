@@ -8,6 +8,7 @@ use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
+use kikitori_engine::replace::Replacer;
 use kikitori_engine::segmenter::{sensevoice, Params, Segmenter, SenseVoicePaths, SAMPLE_RATE};
 use kikitori_proto::{self as proto, read_frame, write_frame};
 use sherpa_onnx::OfflineRecognizer;
@@ -20,16 +21,19 @@ struct Args {
     socket: PathBuf,
     sensevoice_dir: String,
     vad_model: String,
+    replace_file: PathBuf,
     threads: i32,
 }
 
 fn parse_args() -> Args {
     let home = std::env::var("HOME").expect("HOME が未設定");
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("{home}/.cache"));
+    let config_dir = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"));
     let mut args = Args {
         socket: PathBuf::from(format!("{runtime_dir}/kikitori.sock")),
         sensevoice_dir: format!("{home}/.local/share/voxtype/models/sensevoice-small"),
         vad_model: "models/silero_vad.onnx".into(),
+        replace_file: PathBuf::from(format!("{config_dir}/kikitori/replace.tsv")),
         threads: 16,
     };
     let mut it = std::env::args().skip(1);
@@ -39,6 +43,7 @@ fn parse_args() -> Args {
             "--socket" => args.socket = PathBuf::from(value()),
             "--sensevoice-dir" => args.sensevoice_dir = value(),
             "--vad-model" => args.vad_model = value(),
+            "--replace" => args.replace_file = PathBuf::from(value()),
             "--threads" => args.threads = value().parse().expect("--threads は整数"),
             _ => panic!("未知の引数: {arg}"),
         }
@@ -51,6 +56,18 @@ fn main() {
     let paths = SenseVoicePaths {
         model: format!("{}/model.int8.onnx", args.sensevoice_dir),
         tokens: format!("{}/tokens.txt", args.sensevoice_dir),
+    };
+    let replacer = match std::fs::read_to_string(&args.replace_file) {
+        Ok(text) => {
+            let r = Replacer::parse(&text);
+            eprintln!(
+                "置換辞書: {} ルール ({})",
+                r.len(),
+                args.replace_file.display()
+            );
+            r
+        }
+        Err(_) => Replacer::parse(""),
     };
     eprintln!("モデル読み込み中…");
     let recognizer = sensevoice(&paths, args.threads);
@@ -65,7 +82,7 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                if let Err(e) = handle(stream, &recognizer, &args.vad_model) {
+                if let Err(e) = handle(stream, &recognizer, &args.vad_model, &replacer) {
                     // 切断は正常系（クライアントが閉じただけ）
                     if e.kind() != std::io::ErrorKind::UnexpectedEof {
                         eprintln!("接続エラー: {e}");
@@ -87,6 +104,7 @@ fn handle(
     stream: UnixStream,
     recognizer: &OfflineRecognizer,
     vad_model: &str,
+    replacer: &Replacer,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
@@ -122,12 +140,12 @@ fn handle(
                     .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
                     .collect();
                 for text in seg.push(&samples) {
-                    send_text(&mut writer, proto::COMMIT, &text)?;
+                    send_text(&mut writer, proto::COMMIT, &replacer.apply(&text))?;
                 }
                 if seg.recording().len() >= next_partial_at {
                     next_partial_at = seg.recording().len() + PARTIAL_EVERY_SAMPLES;
                     if let Some(partial) = seg.update_partial() {
-                        let partial = partial.to_owned();
+                        let partial = replacer.apply(partial);
                         send_text(&mut writer, proto::PARTIAL, &partial)?;
                     }
                 }
@@ -135,7 +153,7 @@ fn handle(
             proto::STOP => {
                 if let Some(mut seg) = segmenter.take() {
                     for text in seg.flush() {
-                        send_text(&mut writer, proto::COMMIT, &text)?;
+                        send_text(&mut writer, proto::COMMIT, &replacer.apply(&text))?;
                     }
                 }
                 write_frame(&mut writer, proto::STOPPED, b"{}")?;
