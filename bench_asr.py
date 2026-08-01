@@ -26,6 +26,29 @@ import sherpa_onnx
 from poc_incremental import MODEL_DIR, SAMPLE_RATE
 
 SENSEVOICE_DIR = Path.home() / ".local/share/voxtype/models/sensevoice-small"
+MODELS = MODEL_DIR.parent
+
+
+def _whisper(name: str, threads: int) -> sherpa_onnx.OfflineRecognizer:
+    d = MODELS / f"sherpa-onnx-whisper-{name}"
+    return sherpa_onnx.OfflineRecognizer.from_whisper(
+        encoder=str(d / f"{name}-encoder.int8.onnx"),
+        decoder=str(d / f"{name}-decoder.int8.onnx"),
+        tokens=str(d / f"{name}-tokens.txt"),
+        language="ja",
+        task="transcribe",
+        num_threads=threads,
+    )
+
+
+def _dolphin(threads: int) -> sherpa_onnx.OfflineRecognizer:
+    d = MODELS / "sherpa-onnx-dolphin-base-ctc-multi-lang-2025-04-02"
+    return sherpa_onnx.OfflineRecognizer.from_dolphin_ctc(
+        model=str(d / "model.int8.onnx"),
+        tokens=str(d / "tokens.txt"),
+        num_threads=threads,
+    )
+
 
 # 比較する構成。builder は num_threads を受けて OfflineRecognizer を返す
 CONFIGS: dict[str, callable] = {
@@ -41,6 +64,10 @@ CONFIGS: dict[str, callable] = {
         use_itn=True,
         num_threads=n,
     ),
+    "whisper-turbo": lambda n: _whisper("turbo", n),
+    "whisper-small": lambda n: _whisper("small", n),
+    "whisper-large-v3": lambda n: _whisper("large-v3", n),
+    "dolphin-base": _dolphin,
 }
 
 
@@ -101,6 +128,19 @@ def load_dataset(data_dir: Path) -> list[tuple[Path, str]]:
     return sorted(items)
 
 
+def decode_segmented(recognizer, samples: np.ndarray) -> str:
+    """poc_vad と同じ VAD セグメント方式で認識する。長い音声を一括で
+    デコードすると内容が落ちるため、モデル比較もこの経路で行う。"""
+    from poc_vad import Params, Segmenter
+
+    segmenter = Segmenter(Params(), recognizer=recognizer)
+    step = int(0.4 * SAMPLE_RATE)
+    for i in range(0, len(samples), step):
+        segmenter.push(samples[i : i + step])
+    segmenter.flush()
+    return "".join(segmenter.committed)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -112,6 +152,11 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=16)
     parser.add_argument("--configs", help="カンマ区切りの構成名（既定: 全部）")
     parser.add_argument("--show", action="store_true", help="認識結果を全部表示")
+    parser.add_argument(
+        "--whole",
+        action="store_true",
+        help="VAD で区切らず全体を一括デコード（既定は poc_vad と同じ区切り方）",
+    )
     args = parser.parse_args()
 
     names = args.configs.split(",") if args.configs else list(CONFIGS)
@@ -135,11 +180,14 @@ def main() -> None:
         decode_secs = 0.0
         for path, samples, ref in audio:
             t0 = time.monotonic()
-            stream = recognizer.create_stream()
-            stream.accept_waveform(SAMPLE_RATE, samples)
-            recognizer.decode_stream(stream)
+            if args.whole:
+                stream = recognizer.create_stream()
+                stream.accept_waveform(SAMPLE_RATE, samples)
+                recognizer.decode_stream(stream)
+                hyp = stream.result.text
+            else:
+                hyp = decode_segmented(recognizer, samples)
             decode_secs += time.monotonic() - t0
-            hyp = stream.result.text
             e, c = cer(normalize(ref), normalize(hyp))
             errors += e
             chars += c
