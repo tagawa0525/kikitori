@@ -19,7 +19,7 @@ nix shell --impure --expr \
   'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
   -c python3 poc_incremental.py models/sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01/test_wavs/1.wav
 
-# マイク体感テスト
+# マイク体感テスト（--list で入力デバイス一覧、--device で選択）
 nix shell --impure --expr \
   'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
   -c python3 poc_mic.py
