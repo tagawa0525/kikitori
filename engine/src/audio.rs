@@ -3,13 +3,17 @@
 pub const SILENCE_RMS: f32 = 0.005;
 
 /// 二乗平均平方根。空スライスは 0。
-pub fn rms(_samples: &[f32]) -> f32 {
-    todo!()
+pub fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f64 = samples.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+    (sum_sq / samples.len() as f64).sqrt() as f32
 }
 
 /// 声が乗っているか（RMS > SILENCE_RMS）。空スライスは false。
-pub fn is_speech(_samples: &[f32]) -> bool {
-    todo!()
+pub fn is_speech(samples: &[f32]) -> bool {
+    !samples.is_empty() && rms(samples) > SILENCE_RMS
 }
 
 /// `window` を `hop` 幅で走査し、最も静かな区間の開始オフセットを返す。
@@ -17,8 +21,17 @@ pub fn is_speech(_samples: &[f32]) -> bool {
 /// タイブレークするのと同じ挙動）。
 /// 走査範囲は Python の `range(0, len(window) - hop, hop)` に合わせ、
 /// 開始位置が `len - hop` 未満のものだけを対象にする。
-pub fn quietest_offset(_window: &[f32], _hop: usize) -> usize {
-    todo!()
+pub fn quietest_offset(window: &[f32], hop: usize) -> usize {
+    let mut best = (f32::INFINITY, 0);
+    let mut i = 0;
+    while i + hop < window.len() {
+        let energy = rms(&window[i..i + hop]);
+        if energy < best.0 {
+            best = (energy, i);
+        }
+        i += hop;
+    }
+    best.1
 }
 
 #[cfg(test)]
