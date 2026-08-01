@@ -161,7 +161,8 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
    破綻（無音でテキストが壊れる）をここで発見
 3. [x] **VAD セグメント方式**: `poc_vad.py`（§4.2, §4.3）
 4. [x] **モデル選定**: SenseVoice に切り替え（§4.5）。CER 28.3%→7.0%
-5. [ ] **プロトコル定義**: PCM in / {partial, commit} out / トグル（§8.0）
+5. [x] **プロトコル定義**: `PROTOCOL.md`（PCM in / partial・commit out。
+   トグルはクライアントの関心事としてプロトコル外）
 6. [ ] **Rust エンジン**: `Segmenter` 移植。bench_data で Python 版と
    CER 一致を受け入れ条件にする（§8.1〜8.2）
 7. [ ] **Rust クライアント**: iced オーバーレイ（Wayland: layer-shell）+
