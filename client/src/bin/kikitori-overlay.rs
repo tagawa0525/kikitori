@@ -26,6 +26,15 @@ const TARGET_RATE: u32 = 16_000;
 const BAR_HEIGHT: u32 = 76;
 
 pub fn main() -> Result<(), iced_layershell::Error> {
+    // `kikitori-overlay toggle` = 常駐中の自分に合図して即終了。
+    // Wayland にはグローバルホットキーが無く、ショートカットはコマンドの
+    // Spawn しかできないため、引き金は別プロセスになる。バイナリは 1 つで良い
+    if std::env::args().nth(1).as_deref() == Some("toggle") {
+        let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
+        std::os::unix::net::UnixStream::connect(format!("{dir}/kikitori-ctl.sock"))
+            .expect("kikitori-overlay が起動していない");
+        return Ok(());
+    }
     application(App::default, namespace, update, view)
         .style(style)
         .subscription(subscription)
