@@ -206,9 +206,11 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         let mut session: Vec<String> = Vec::new();
         std::thread::spawn(move || loop {
             let Ok(frame) = read_frame(&mut reader) else {
+                eprintln!("[overlay] エンジン切断");
                 events.send(EngineEvent::Status("エンジン切断".into()));
                 return;
             };
+            eprintln!("[overlay] 受信 0x{:02X}", frame.kind);
             let get = |p: &[u8]| {
                 serde_json::from_slice::<serde_json::Value>(p)
                     .ok()
@@ -226,12 +228,14 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
                 proto::STOPPED => {
                     // 停止確定: このセッションの全文を wtype で入力
                     let text: String = session.drain(..).collect();
+                    eprintln!(
+                        "[overlay] STOPPED: {} 文字を wtype へ",
+                        text.chars().count()
+                    );
                     if !text.is_empty() {
-                        let ok = std::process::Command::new("wtype")
-                            .arg(&text)
-                            .status()
-                            .map(|s| s.success())
-                            .unwrap_or(false);
+                        let st = std::process::Command::new("wtype").arg(&text).status();
+                        eprintln!("[overlay] wtype 結果: {st:?}");
+                        let ok = st.map(|s| s.success()).unwrap_or(false);
                         events.send(EngineEvent::Status(if ok {
                             "入力しました（kikitori-toggle で再開）".into()
                         } else {
@@ -270,7 +274,13 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
                 return;
             }
             let _ = writer.flush();
+            eprintln!(
+                "[overlay] toggle → {}",
+                if recording { "録音" } else { "停止" }
+            );
             if recording {
+                events.send(EngineEvent::Commit(String::new())); // 前回表示のクリア
+                events.send(EngineEvent::Partial(String::new()));
                 status("録音中…");
                 while audio_rx.try_recv().is_ok() {} // 溜まった音声を捨てる
             }
