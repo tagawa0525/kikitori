@@ -51,6 +51,7 @@ struct App {
     status: String,
     last_commit: String,
     partial: String,
+    recording: bool,
 }
 
 #[to_layer_message]
@@ -64,6 +65,7 @@ enum EngineEvent {
     Status(String),
     Partial(String),
     Commit(String),
+    Recording(bool),
 }
 
 /// futures チャンネルへの同期送信ラッパ。
@@ -89,12 +91,17 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.last_commit = t;
                 app.partial.clear();
             }
+            EngineEvent::Recording(b) => app.recording = b,
         }
     }
     Task::none()
 }
 
 fn view(app: &App) -> Element<'_, Message> {
+    if !app.recording {
+        // 待機中はバーを消す（背景も style 側で透明にする）
+        return container(column![]).into();
+    }
     let line = |t: &str, dim: bool| {
         text(t.to_owned())
             .size(20)
@@ -117,9 +124,13 @@ fn view(app: &App) -> Element<'_, Message> {
         .into()
 }
 
-fn style(_app: &App, _theme: &iced::Theme) -> iced::theme::Style {
+fn style(app: &App, _theme: &iced::Theme) -> iced::theme::Style {
     iced::theme::Style {
-        background_color: Color::from_rgba(0.08, 0.08, 0.10, 0.85),
+        background_color: if app.recording {
+            Color::from_rgba(0.08, 0.08, 0.10, 0.85)
+        } else {
+            Color::TRANSPARENT
+        },
         text_color: Color::WHITE,
     }
 }
