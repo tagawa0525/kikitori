@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod proto;
 pub mod segmenter;
 pub mod text;
 
