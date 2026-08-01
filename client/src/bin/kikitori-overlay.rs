@@ -5,6 +5,8 @@
 //! keyboard_interactivity は None にして、入力先アプリのフォーカスを奪わない。
 //!
 //! 実行: kikitori-overlay [--socket PATH]（kikitorid が起動済みであること）
+//! トグル: `kikitori-toggle` が制御ソケット（kikitori-ctl.sock）に
+//! "toggle" を書くと録音開始/停止。停止時は確定テキストを wtype で入力する。
 
 use std::io::{BufReader, BufWriter, Write as _};
 use std::os::unix::net::UnixStream;
@@ -183,7 +185,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         )
         .expect("入力ストリームを開けない");
     stream.play().expect("キャプチャ開始に失敗");
-    status("録音中（エンジン接続中…）");
+    status("待機中（kikitori-toggle で開始）");
 
     let conn = match UnixStream::connect(&socket) {
         Ok(c) => c,
@@ -201,6 +203,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     // 受信スレッド
     {
         let events = events.clone();
+        let mut session: Vec<String> = Vec::new();
         std::thread::spawn(move || loop {
             let Ok(frame) = read_frame(&mut reader) else {
                 events.send(EngineEvent::Status("エンジン切断".into()));
@@ -213,21 +216,76 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
                     .unwrap_or_default()
             };
             match frame.kind {
-                proto::READY => events.send(EngineEvent::Status("話してください".into())),
+                proto::READY => events.send(EngineEvent::Status("待機中".into())),
                 proto::PARTIAL => events.send(EngineEvent::Partial(get(&frame.payload))),
-                proto::COMMIT => events.send(EngineEvent::Commit(get(&frame.payload))),
+                proto::COMMIT => {
+                    let t = get(&frame.payload);
+                    session.push(t.clone());
+                    events.send(EngineEvent::Commit(t));
+                }
+                proto::STOPPED => {
+                    // 停止確定: このセッションの全文を wtype で入力
+                    let text: String = session.drain(..).collect();
+                    if !text.is_empty() {
+                        let ok = std::process::Command::new("wtype")
+                            .arg(&text)
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false);
+                        events.send(EngineEvent::Status(if ok {
+                            "入力しました（kikitori-toggle で再開）".into()
+                        } else {
+                            "wtype 失敗".into()
+                        }));
+                    } else {
+                        events.send(EngineEvent::Status("待機中".into()));
+                    }
+                }
                 _ => {}
             }
         });
     }
 
-    // 送信ループ（この関数は専用スレッドなのでブロッキングで良い）
-    loop {
-        let Ok(bytes) = audio_rx.recv() else { return };
-        if write_frame(&mut writer, proto::AUDIO, &bytes).is_err() {
-            return;
+    // 制御ソケット: "toggle" 1 行で録音開始/停止
+    let (ctl_tx, ctl_rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
+        let path = format!("{dir}/kikitori-ctl.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener =
+            std::os::unix::net::UnixListener::bind(&path).expect("制御ソケットに bind できない");
+        for conn in listener.incoming().flatten() {
+            drop(conn); // 接続 = トグル（中身は読まない）
+            let _ = ctl_tx.send(());
         }
-        let _ = writer.flush();
+    });
+
+    // 送信ループ: 録音中だけ AUDIO を流す。トグルで START/STOP
+    let mut recording = false;
+    loop {
+        if ctl_rx.try_recv().is_ok() {
+            recording = !recording;
+            let kind = if recording { proto::START } else { proto::STOP };
+            if write_frame(&mut writer, kind, b"{}").is_err() {
+                return;
+            }
+            let _ = writer.flush();
+            if recording {
+                status("録音中…");
+                while audio_rx.try_recv().is_ok() {} // 溜まった音声を捨てる
+            }
+        }
+        match audio_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(bytes) if recording => {
+                if write_frame(&mut writer, proto::AUDIO, &bytes).is_err() {
+                    return;
+                }
+                let _ = writer.flush();
+            }
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
     }
 }
 
