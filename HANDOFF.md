@@ -159,18 +159,19 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
    破綻（無音でテキストが壊れる）をここで発見
 3. [x] **VAD セグメント方式**: `poc_vad.py`（§4.2, §4.3）
 4. [x] **モデル選定**: SenseVoice に切り替え（§4.5）。CER 28.3%→7.0%
-5. [ ] **オーバーレイ表示**: GTK4 + gtk4-layer-shell（nixpkgs にあり）で
-   画面下部中央の固定バー。COSMIC は wlr-layer-shell 対応。
-   Python なら PyGObject + gtk4-layer-shell。カーソル位置追従は
-   Wayland では不可能なので固定バーで良い（Windows も同じ）
-6. [ ] **デーモン化**: トグル制御（UNIX ソケット、`kikitori toggle` CLI）、
-   録音開始/停止、確定時 wtype 入力、句読点後処理（§2）。
-   `poc_vad.py` の `Segmenter` がそのままコアになる
-7. [ ] **配布**: flake 化（パッケージ + Home Manager モジュール or
+5. [ ] **プロトコル定義**: PCM in / {partial, commit} out / トグル（§8.0）
+6. [ ] **Rust エンジン**: `Segmenter` 移植。bench_data で Python 版と
+   CER 一致を受け入れ条件にする（§8.1〜8.2）
+7. [ ] **Rust クライアント**: iced オーバーレイ（Wayland: layer-shell）+
+   wtype + トグル。まず Unix ソケットで同一マシン完結。
+   カーソル位置追従は Wayland では不可能なので画面下部の固定バー
+8. [ ] **TCP トランスポート**: x1ng1 等から r995 のエンジンを使う（§8.0）
+9. [ ] **配布**: flake 化（パッケージ + Home Manager モジュール or
    ショートカット差し替え手順）、systemd ユーザーサービス、
    nixfiles への input 追加（qmpo / cc-bar と同じパターン）。
    モデルは巨大なので nix store に入れず、初回セットアップコマンドで
-   `~/.local/share/kikitori/` へダウンロードする方式（voxtype と同様）
+   `~/.local/share/kikitori/` へダウンロードする方式（voxtype と同様）。
+   Windows/Mac クライアントの配布は後段で検討
 
 ## 6. 検証済みの環境知見（再調査不要）
 
@@ -209,15 +210,71 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
   公開するかどうかはユーザーに確認すること
 - リポジトリ名「kikitori」は仮称。ユーザーが変更する可能性あり
 
-## 8. Rust への移行（方針決定済み、着手前）
+## 8. Rust 実装（方針決定済み、着手前）
 
 最終的な実装は Rust にする（ユーザー指定）。認識精度は変わらない
 （sherpa-onnx は C++ 実装で、Python も Rust も同じライブラリを呼ぶだけ）。
-狙いは常駐デーモンとしての定常レイテンシ・メモリと、単一バイナリでの配布。
+アルゴリズム面の未知（再デコード方式・区切り・モデル選定）は PoC で解消済み
+のため、直接 Rust で実装する。Python コードは実験ハーネスとして残し、
+**bench_data で Python 版と CER が一致することを移植の受け入れ条件にする**。
 
-**PoC で方式を固めきってから移すこと。** 現時点で「全バッファ再デコードは
-破綻する」「最適な区間長はモデルごとに全く違う」「モデル選定はニュース音声で
-判断すると誤る」と設計判断が繰り返し覆っている。
+### 8.0 アーキテクチャ改訂（2026-08-02 合意）
+
+エンジンとクライアントを最初から分離する:
+
+```text
+[クライアント: 各マシン]                [エンジン: r995 または同一マシン]
+ マイク取得 (cpal 48kHz→16kHz)   ──PCM──▶  VAD + SenseVoice (常駐)
+ オーバーレイ表示 (iced)         ◀─events── {partial | commit}
+ 確定入力 / トグル
+        └ トランスポート: Unix ソケット（同一マシン）→ TCP（LAN、後段）
+```
+
+- 弱いマシン（x1ng1: 4 スレッド）では部分デコードが 400ms 周期を超えうる
+  ため、LAN 上の r995 をエンジンにできる構成に価値がある（帯域は 16kHz
+  mono 16bit で 32kB/s と無視できる）。「完全ローカル」要件はクラウド拒否の
+  意味なので、自分のマシン群で閉じる構成は要件内
+- エンジン常駐によりモデル読み込みとキャプチャの順序問題（§4 で踏んだ
+  取りこぼし）が構造的に消える
+- VAD はエンジン側（クライアントを薄く保つ）
+- 決めておくこと: エンジン不達時の挙動、TCP の認証（初期は SSH トンネル/
+  Tailscale で十分）
+
+**クライアントは Windows/Mac 対応を見据える**（ユーザー要望）。UI は iced
+（クロスプラットフォーム、COSMIC と同系）。プラットフォーム差分は 3 点に
+限定される:
+
+| 差分 | Linux/Wayland | Windows / Mac |
+| --- | --- | --- |
+| オーバーレイ窓 | layer-shell | 最前面・装飾なし窓（iced/winit の標準機能） |
+| 確定入力 | wtype 呼び出し | enigo（SendInput / CGEvent。Win/Mac は成熟） |
+| トグル | COSMIC ショートカット→ソケット | global-hotkey クレート |
+
+音声取得（cpal）とエンジン・プロトコルは全 OS 共通。
+
+### 8.0b 既存ツール調査（2026-08-02、作る前の確認）
+
+近縁ツールはあるが、要件の組合せ（リアルタイム部分表示 × 日本語精度 ×
+LAN エンジン × クロスプラットフォーム）を満たすものは存在しなかった:
+
+- **Handy**（Rust/Tauri、Win/Mac/Linux、活発）: SenseVoice も選べる完全
+  ローカル音声入力。ただし**押して話して離すと一括入力**で、リアルタイム
+  表示がない。つまり UX は現行ベースライン（voxtype）と同じで、それは
+  ユーザーが「入力中に何が見えない」として不採用にしたもの
+- **whisper-overlay**（Rust + Python）: リアルタイム部分表示 + LAN サーバ +
+  layer-shell + virtual-keyboard と**アーキテクチャは一致**（部分=速いモデル、
+  確定=正確なモデルの 2 段構成も §2 と同型）。ただし faster-whisper 限定
+  （日本語 CER は SenseVoice の 1.7 倍悪く 10 倍遅いと実測済み）、
+  サーバが Python、保守が薄い（88 star）、Wayland のみ
+- **SenseType**（Windows 専用）: SenseVoice + ホットキー一括入力
+- **hyprwhspr / waystt / whisrs / Vocalinux / Speech Note**: いずれも
+  一括転写型か転写アプリで、リアルタイム部分表示 + システム全体への
+  入力の組合せがない。SenseVoice 対応もない
+
+結論: 差別化点は最初のユーザー要件そのもの（話している最中に見える）＋
+実測に基づく日本語モデル選定。whisper-overlay が方式の先行例として参考になる。
+
+以下は実際にビルド・リンクして確認済み（nixpkgs 26.11pre-git, rustc 1.97.1）。
 
 以下は実際にビルド・リンクして確認済み（nixpkgs 26.11pre-git, rustc 1.97.1）。
 
@@ -271,16 +328,15 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
   `id()` に。`sample_rate` は `SampleRate` ではなく `u32`）。
   0.18 より前のサンプルコードはそのままでは通らない
 
-### 8.4 オーバーレイ（gtk4-layer-shell）
+### 8.4 オーバーレイ（iced に決定）
 
-- クレート `gtk4-layer-shell` 0.8.0 が `gtk` 0.11 に対応し、nixpkgs の
-  `gtk4-layer-shell` 1.3.0 / `gtk4` 4.22.4 と版が噛み合う（`v1_3` feature）
-- 画面下端のバーは
-  `init_layer_shell / set_layer(Overlay) / set_anchor(Edge::Bottom, true) /
-  set_keyboard_mode(KeyboardMode::None) / auto_exclusive_zone_enable()`
-  でビルドが通ることを確認済み（実機の合成器での表示は未確認）
-- 「passively-maintained」を自称しているが、C ライブラリの薄いラッパなので
-  実用上の問題はない見込み
+- UI は iced（ユーザー合意）。Wayland では layer-shell 統合
+  （`iced_layershell` 等）、Windows/Mac では最前面・装飾なし窓
+- 着手時の確認事項: `iced_layershell` の COSMIC 上での動作実績。
+  問題があれば smithay-client-toolkit + cosmic-text + softbuffer の
+  直接実装に切り替える（表示は 1 本のテキストバーなので依存最小で足りる）
+- 旧候補の gtk4-layer-shell（0.8.0、nixpkgs 1.3.0 と整合、ビルド確認済み）は
+  Rust 前提では C 依存を持ち込む理由がなく不採用
 
 ### 8.5 確定テキストの入力
 
