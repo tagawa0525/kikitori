@@ -53,10 +53,23 @@
               pkgs.rust-analyzer
             ];
 
-            # ビルド時: sherpa-onnx-sys の GitHub ダウンロードを短絡する
-            SHERPA_ONNX_LIB_DIR = "${sherpaLibs}/lib";
             # 実行時: 生成バイナリに rpath を焼き込み、shell 外でも動くようにする
             RUSTFLAGS = "-C link-arg=-Wl,-rpath,${sherpaLibs}/lib";
+
+            # ビルド時: sherpa-onnx-sys の GitHub ダウンロードを短絡する。
+            # store を直接指すと、build.rs が fs::copy で読み取り専用の
+            # パーミッションごと target/ に .so を複製し、ビルドスクリプト
+            # 再実行時（clippy 等）に上書きできず Permission denied になる。
+            # 書き込み可能なキャッシュへ複製してそちらを指す
+            # （ディレクトリ名に store ハッシュを含め、更新時に作り直す）
+            shellHook = ''
+              export SHERPA_ONNX_LIB_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/kikitori/${baseNameOf sherpaLibs}/lib"
+              if [ ! -d "$SHERPA_ONNX_LIB_DIR" ]; then
+                mkdir -p "$SHERPA_ONNX_LIB_DIR"
+                cp -L ${sherpaLibs}/lib/*.so* "$SHERPA_ONNX_LIB_DIR/"
+                chmod u+w "$SHERPA_ONNX_LIB_DIR"/*
+              fi
+            '';
           };
         }
       );
