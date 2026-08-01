@@ -252,6 +252,7 @@ name = "kikitori-engine"
 version = "0.1.0"
 dependencies = [
  "hound",
+ "serde_json",
  "sherpa-onnx",
 ]
 

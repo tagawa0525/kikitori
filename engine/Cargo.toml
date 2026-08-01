@@ -8,6 +8,7 @@ edition = "2021"
 # sys 側の FFI は版ごとの手書きで、版ずれは構造体レイアウトの齟齬になる
 sherpa-onnx = { version = "=1.13.3", default-features = false, features = ["shared"] }
 hound = "3"
+serde_json = "1"
 
 [lib]
 name = "kikitori_engine"
