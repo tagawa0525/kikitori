@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod replace;
 pub mod segmenter;
 pub mod text;
 
