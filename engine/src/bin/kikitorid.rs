@@ -32,6 +32,15 @@ struct Args {
     tcp: Option<String>,
 }
 
+/// 推論スレッド数の既定値: 論理 CPU 数の半分（SMT 環境ではおおむね物理
+/// コア数。r995: 32→16 は実測済みの値と一致、x1ng1: 8→4）。
+/// CPU 数を取得できない環境では 4 に落とす。--threads で上書き可能
+fn default_threads() -> i32 {
+    std::thread::available_parallelism()
+        .map(|n| (n.get() / 2).max(1))
+        .unwrap_or(4) as i32
+}
+
 fn parse_args() -> Args {
     let home = std::env::var("HOME").expect("HOME が未設定");
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("{home}/.cache"));
@@ -41,7 +50,7 @@ fn parse_args() -> Args {
         sensevoice_dir: format!("{home}/.local/share/voxtype/models/sensevoice-small"),
         vad_model: "models/silero_vad.onnx".into(),
         replace_file: PathBuf::from(format!("{config_dir}/kikitori/replace.tsv")),
-        threads: 16,
+        threads: default_threads(),
         idle_timeout_secs: 120,
         tcp: None,
     };
@@ -82,7 +91,7 @@ fn main() {
         }
         Err(_) => Replacer::parse(""),
     };
-    eprintln!("モデル読み込み中…");
+    eprintln!("モデル読み込み中…（threads={}）", args.threads);
     let recognizer = sensevoice(&paths, args.threads);
     eprintln!("読み込み完了");
 
