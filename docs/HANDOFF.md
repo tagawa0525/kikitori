@@ -183,9 +183,12 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
      48kHz ステレオ限定 + bindgen が要るため v0 では不採用（§8.3 は
      この決定で上書き）。整数倍レートからの自前変換も client/src/audio.rs に
      実装済み
-   - [ ] iced オーバーレイ（Wayland: layer-shell、他: 最前面窓）+ トグル。
-     カーソル位置追従は Wayland では不可能なので画面下部の固定バー。
-     `iced_layershell` の COSMIC 動作確認が最初の関門
+   - [x] iced オーバーレイ `kikitori-overlay`（iced 0.14 +
+     iced_layershell 0.19、ビルド済み）。画面下部の固定バーに部分/確定を
+     逐次表示、keyboard_interactivity=None でフォーカスを奪わない。
+     **COSMIC での実描画はユーザー確認待ち**
+   - [ ] トグル（ショートカット → 録音開始/停止 → wtype 確定入力を
+     オーバーレイに統合）。置換辞書（実地テストで最優先と判明）もここで
 8. [ ] **TCP トランスポート**: x1ng1 等から r995 のエンジンを使う（§8.0）
 9. [ ] **配布**: flake 化（パッケージ + Home Manager モジュール or
    ショートカット差し替え手順）、systemd ユーザーサービス、

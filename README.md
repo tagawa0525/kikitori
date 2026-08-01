@@ -13,6 +13,16 @@ Wayland 向け（COSMIC 等）の完全ローカル・リアルタイム日本�
 
 flake + direnv で固定している。`direnv allow` するか、`nix develop` に入る。
 
+## Rust 実装（開発中の本体）
+
+```bash
+nix develop  # または direnv allow
+
+cargo run -p kikitori-engine --bin kikitorid   # エンジン（モデル常駐）
+cargo run -p kikitori-client --bin kikitori-cli        # CLI クライアント
+cargo run -p kikitori-client --bin kikitori-overlay    # 画面下部バー表示
+```
+
 ## PoC
 
 ```bash
