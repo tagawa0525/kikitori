@@ -55,10 +55,21 @@ class Params:
     # 無声化した語尾を VAD が無音と判定して切るため、前より厚くする。
     # 次のセグメントは min_silence 以上空くので発話に食い込む心配はない
     lookback: float = 1.0  # 部分デコードの遡り幅（VAD の検出遅れの吸収）
-    min_silence: float = 0.8  # これ未満の間は文中の息継ぎとみなし区切らない
-    max_speech: float = 12.0  # 無区切りで話し続けた場合の強制確定。
-    # zipformer は 15 秒を超えると内容を落とし始めるため安全側に置く
+    min_silence: float = 0.5  # これ未満の間は文中の息継ぎとみなし区切らない
+    max_speech: float = 6.0  # 無区切りで話し続けた場合の強制確定。
+    # 実音声では区間が長いほど内容が落ちる。実測グリッド（bench_data/voice1）
+    # では 6 秒 / 0.5 秒が最良で CER 8.2%、12 秒 / 0.8 秒では 29.5% だった
     threshold: float = 0.5  # silero の発話判定しきい値
+
+
+def zipformer(threads: int) -> sherpa_onnx.OfflineRecognizer:
+    return sherpa_onnx.OfflineRecognizer.from_transducer(
+        encoder=str(MODEL_DIR / "encoder-epoch-99-avg-1.int8.onnx"),
+        decoder=str(MODEL_DIR / "decoder-epoch-99-avg-1.int8.onnx"),
+        joiner=str(MODEL_DIR / "joiner-epoch-99-avg-1.int8.onnx"),
+        tokens=str(MODEL_DIR / "tokens.txt"),
+        num_threads=threads,
+    )
 
 
 class Recording:
@@ -83,15 +94,14 @@ class Recording:
 class Segmenter:
     """録音を VAD で区切り、確定テキストと進行中の部分テキストを管理する。"""
 
-    def __init__(self, threads: int, params: Params) -> None:
+    def __init__(
+        self,
+        params: Params,
+        recognizer: sherpa_onnx.OfflineRecognizer | None = None,
+        threads: int = 16,
+    ) -> None:
         self.params = params
-        self.recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
-            encoder=str(MODEL_DIR / "encoder-epoch-99-avg-1.int8.onnx"),
-            decoder=str(MODEL_DIR / "decoder-epoch-99-avg-1.int8.onnx"),
-            joiner=str(MODEL_DIR / "joiner-epoch-99-avg-1.int8.onnx"),
-            tokens=str(MODEL_DIR / "tokens.txt"),
-            num_threads=threads,
-        )
+        self.recognizer = recognizer or zipformer(threads)
         config = sherpa_onnx.VadModelConfig()
         config.silero_vad.model = str(VAD_MODEL)
         config.silero_vad.min_silence_duration = params.min_silence
@@ -307,7 +317,7 @@ def main() -> None:
         return
 
     params = Params(**{f.name: getattr(args, f.name) for f in fields(Params)})
-    segmenter = Segmenter(args.threads, params)
+    segmenter = Segmenter(params, threads=args.threads)
     if args.wav:
         run_wav(segmenter, args.wav, verbose=not args.quiet)
     else:
