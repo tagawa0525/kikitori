@@ -2,9 +2,10 @@
 
 COSMIC/Wayland 向けの完全ローカル・リアルタイム日本語音声入力（開発中）。
 
-- エンジン: sherpa-onnx + ReazonSpeech zipformer (int8)
-- 方式: 録音バッファを 400ms ごとに再デコードし部分テキストを表示、
-  停止時に wtype で確定入力（Windows の「聞き取りバー」方式）
+- エンジン: sherpa-onnx + SenseVoice small (int8)
+- 方式: VAD で発話を区切り、確定セグメントは 1 度だけデコード。進行中の
+  発話のみ 400ms ごとに再デコードして部分テキストを表示し、停止時に
+  wtype で確定入力（Windows の「聞き取りバー」方式）
 
 ## PoC
 
@@ -37,6 +38,19 @@ nix shell --impure --expr \
 
 `poc_mic.py` は全バッファ再デコード方式（無音で確定テキストが壊れる問題あり、
 比較用に残置）。
+
+## モデル比較 (自分の声 4 本 210 秒、CER)
+
+| モデル | CER | RTF |
+| --- | --- | --- |
+| **SenseVoice small** | **7.0%** | 0.013 |
+| whisper-large-v3 | 11.8% | 1.351 |
+| whisper-turbo | 13.2% | 0.159 |
+| dolphin-base | 15.3% | 0.010 |
+| ReazonSpeech zipformer | 17.0% | 0.017 |
+
+モデル同梱のニュース音声では zipformer が SenseVoice の 3 倍良かったが、
+実際のマイク録音では逆転した。詳細は HANDOFF.md §4。
 
 ## PoC 計測結果 (r995, 16 threads, 2026-08-01)
 
