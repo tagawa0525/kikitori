@@ -196,12 +196,13 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
 
 ## 7. 開発環境メモ
 
-- 依存の入手（暫定。flake 化までの間）:
-
-  ```bash
-  nix shell --impure --expr \
-    'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])'
-  ```
+- 環境は flake + direnv で固定（`flake.nix`、nixos-unstable を lock）。
+  `direnv allow` または `nix develop`。固定後も bench の CER が完全一致する
+  ことを確認済み。`.envrc` はユーザーのグローバル gitignore の方針で
+  コミットしない
+- レイアウト: `poc/`（Python 実験ハーネス）、`docs/`（設計文書）、
+  `bench_data/`・`models/`（ルート。Rust の CER パリティテストも共用）。
+  Rust は `engine/`・`client/` クレートを追加予定
 
 - モデル取得コマンドは README.md 参照（`models/` は .gitignore 済み、
   中に実音声の `test_wavs/` と正解 `transcript.txt` が同梱されている）

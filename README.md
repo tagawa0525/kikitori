@@ -9,6 +9,10 @@ Wayland 向け（COSMIC 等）の完全ローカル・リアルタイム日本�
   発話のみ 400ms ごとに再デコードして部分テキストを表示し、停止時に
   wtype で確定入力（Windows の「聞き取りバー」方式）
 
+## 開発環境
+
+flake + direnv で固定している。`direnv allow` するか、`nix develop` に入る。
+
 ## PoC
 
 ```bash
@@ -22,20 +26,14 @@ curl -L -o models/silero_vad.onnx \
   https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
 
 # ファイル逐次デコード（遅延・安定性計測）
-nix shell --impure --expr \
-  'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
-  -c python3 poc/poc_incremental.py models/sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01/test_wavs/1.wav
+python3 poc/poc_incremental.py models/sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01/test_wavs/1.wav
 
 # マイク体感テスト（VAD セグメント方式・こちらが現行）
 # --list で入力デバイス一覧、--device で選択、--wav で音声ファイルを流す
-nix shell --impure --expr \
-  'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
-  -c python3 poc/poc_vad.py
+python3 poc/poc_vad.py
 
 # 構成・モデルの精度比較（CER / RTF）
-nix shell --impure --expr \
-  'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
-  -c python3 poc/bench_asr.py
+python3 poc/bench_asr.py
 ```
 
 `poc/poc_mic.py` は全バッファ再デコード方式（無音で確定テキストが壊れる問題あり、
