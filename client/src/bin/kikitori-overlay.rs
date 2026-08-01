@@ -242,7 +242,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
                     .unwrap_or_default()
             };
             match frame.kind {
-                proto::READY => events.send(EngineEvent::Status("待機中".into())),
+                proto::READY => {} // 状態表示は START 時の「録音中…」のみ
                 proto::PARTIAL => events.send(EngineEvent::Partial(get(&frame.payload))),
                 proto::COMMIT => {
                     let t = get(&frame.payload);
