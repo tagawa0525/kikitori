@@ -1,6 +1,8 @@
 # kikitori（仮称）
 
-COSMIC/Wayland 向けの完全ローカル・リアルタイム日本語音声入力（開発中）。
+Wayland 向け（COSMIC 等）の完全ローカル・リアルタイム日本語音声入力
+（開発中）。エンジン/クライアント分離で、クライアントは将来 Windows/Mac
+にも展開予定。
 
 - エンジン: sherpa-onnx + SenseVoice small (int8)
 - 方式: VAD で発話を区切り、確定セグメントは 1 度だけデコード。進行中の
