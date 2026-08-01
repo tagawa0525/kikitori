@@ -2,3 +2,4 @@ models/
 bench_data/*.wav
 .direnv/
 target/
+result
