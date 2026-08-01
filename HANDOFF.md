@@ -209,7 +209,92 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
   公開するかどうかはユーザーに確認すること
 - リポジトリ名「kikitori」は仮称。ユーザーが変更する可能性あり
 
-## 8. 関連リソース
+## 8. Rust への移行（方針決定済み、着手前）
+
+最終的な実装は Rust にする（ユーザー指定）。認識精度は変わらない
+（sherpa-onnx は C++ 実装で、Python も Rust も同じライブラリを呼ぶだけ）。
+狙いは常駐デーモンとしての定常レイテンシ・メモリと、単一バイナリでの配布。
+
+**PoC で方式を固めきってから移すこと。** 現時点で「全バッファ再デコードは
+破綻する」「最適な区間長はモデルごとに全く違う」「モデル選定はニュース音声で
+判断すると誤る」と設計判断が繰り返し覆っている。
+
+以下は実際にビルド・リンクして確認済み（nixpkgs 26.11pre-git, rustc 1.97.1）。
+
+### 8.1 sherpa-onnx バインディング
+
+- **`sherpa-rs` は使わない**。2026-06-06 にアーカイブ済みで、README が公式
+  バインディングへの移行を指示している
+- **公式の `sherpa-onnx` / `sherpa-onnx-sys` クレートを使う**。k2-fsa が
+  本体リポジトリ内で保守し、C++ 側のリリースと版が揃う
+- **nixpkgs の `sherpa-onnx` は 1.13.3 なのでクレートも 1.13.3 に固定する**。
+  sys 側の FFI は版ごとの手書きなので、版ずれは構造体レイアウトの齟齬になる
+- SenseVoice は `OfflineSenseVoiceModelConfig { model, language, use_itn }` を
+  `OfflineRecognizerConfig.model_config.sense_voice` に入れる形。Python の
+  `from_sense_voice` のようなコンストラクタではない
+- silero VAD も `SileroVadModelConfig` / `VoiceActivityDetector` /
+  `SpeechSegment` として揃っている
+- **落とし穴: config は `#[derive(Default)]` で全フィールドが 0**。
+  sherpa の推奨既定値は入らないので、`min_silence_duration` なども含めて
+  全部明示的に設定すること
+- `LinearResampler::create(in_hz, out_hz)` があり 48k→16k に使える
+
+### 8.2 Nix でのビルド
+
+- `sherpa-onnx-sys` の build.rs は既定で GitHub からビルド済みアーカイブを
+  **ダウンロードする**（Nix サンドボックスでは不可）。
+  `default-features = false, features = ["shared"]` にしたうえで
+  環境変数 `SHERPA_ONNX_LIB_DIR` を指すと短絡でき、ネットワークなしで通る
+- 指す先は `sherpa-onnx` と `onnxruntime` の `.so` を `symlinkJoin` で
+  1 ディレクトリにまとめたもの（両方が同じディレクトリに要る）
+- sys クレートは FFI が手書きで **bindgen を使わない**ため、libclang を
+  ビルド閉包に持ち込まずに済む
+- nixpkgs の `sherpa-onnx` は `BUILD_SHARED_LIBS=true` で
+  `lib/libsherpa-onnx-c-api.so` と `include/sherpa-onnx/c-api/c-api.h` を出す。
+  `.pc` は `$out/lib/pkgconfig/` ではなく `$out/sherpa-onnx.pc` にあるので注意
+
+### 8.3 音声取得（cpal）
+
+- `cpal` 0.18 で **PipeWire ホストがネイティブ対応**（Linux の優先順位は
+  PipeWire > PulseAudio > ALSA）。ただし `default = []` なので
+  `features = ["pipewire"]` が要る
+- **PipeWire ホストは 48kHz ステレオしか出さない**（r995 実測。1ch や 16kHz の
+  構成は提示されない）。ALSA ホスト経由なら 16kHz mono も選べるが、それは
+  `plug` が裏で変換しているだけで PipeWire への余計な往復が入る。
+  **48kHz ステレオで取ってダウンミックス＋リサンプルを自前でやる**ほうが
+  予測可能（リサンプルは §8.1 の `LinearResampler`）
+- **落とし穴: `--features pipewire` は NixOS でビルドが壊れる**
+  （`SPA_ID_INVALID` が見つからない）。bindgen が `stdint.h` を拾えないため。
+  `BINDGEN_EXTRA_CLANG_ARGS="-isystem $(clang -print-resource-dir)/include"` と
+  `LIBCLANG_PATH` を渡せば通る。PipeWire や clang の版には依存しない
+- 0.18 で API が変わった（`DeviceTrait::name()` は廃止、`description()` /
+  `id()` に。`sample_rate` は `SampleRate` ではなく `u32`）。
+  0.18 より前のサンプルコードはそのままでは通らない
+
+### 8.4 オーバーレイ（gtk4-layer-shell）
+
+- クレート `gtk4-layer-shell` 0.8.0 が `gtk` 0.11 に対応し、nixpkgs の
+  `gtk4-layer-shell` 1.3.0 / `gtk4` 4.22.4 と版が噛み合う（`v1_3` feature）
+- 画面下端のバーは
+  `init_layer_shell / set_layer(Overlay) / set_anchor(Edge::Bottom, true) /
+  set_keyboard_mode(KeyboardMode::None) / auto_exclusive_zone_enable()`
+  でビルドが通ることを確認済み（実機の合成器での表示は未確認）
+- 「passively-maintained」を自称しているが、C ライブラリの薄いラッパなので
+  実用上の問題はない見込み
+
+### 8.5 確定テキストの入力
+
+- **`wtype` を外部コマンドとして呼ぶ**のが現実解（`pkgs.wtype` 0.4）。
+  §6 のとおり COSMIC 1.5 で日本語直接入力が動くことは確認済み
+- `zwp_virtual_keyboard_v1` をライブラリとして提供する保守された
+  クレートは**存在しない**。`zwp-virtual-keyboard` / `zwp-input-method` は
+  DEPRECATED（0.0.0、2022 年で停止）、`enigo` の Wayland 対応は実験的
+- 自前で実装するなら `wayland-protocols-misc`（smithay/wayland-rs 系、保守良好）
+  に `virtual-keyboard-unstable-v1.xml` がある。ただし XKB キーマップ生成・
+  memfd・任意 Unicode のキーコード割り当てを自分で持つことになる。
+  `wrtype` が参考実装になるが、単発リリースで保守状況が確認できず依存は避ける
+
+## 9. 関連リソース
 
 - nixfiles: `modules/home/parts/voice-input.nix`（ベースライン実装。
   検証済み知見が全てコメントに残してある）
