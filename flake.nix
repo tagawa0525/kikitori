@@ -54,6 +54,7 @@
               # Rust（engine/ ほか）
               pkgs.pkg-config
               pkgs.alsa-lib # cpal（client の音声取得）
+              pkgs.wtype # 確定テキストの入力（クライアントが実行する）
               pkgs.libxkbcommon # iced/winit が dlopen する
               pkgs.vulkan-loader # wgpu
               pkgs.wayland
