@@ -14,27 +14,62 @@ curl -L -o models/model.tar.bz2 \
   https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01.tar.bz2
 tar xjf models/model.tar.bz2 -C models/
 
+# VAD モデル（発話区切りの検出用、約600KB）
+curl -L -o models/silero_vad.onnx \
+  https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+
 # ファイル逐次デコード（遅延・安定性計測）
 nix shell --impure --expr \
   'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
   -c python3 poc_incremental.py models/sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01/test_wavs/1.wav
 
-# マイク体感テスト（--list で入力デバイス一覧、--device で選択）
+# マイク体感テスト（VAD セグメント方式・こちらが現行）
+# --list で入力デバイス一覧、--device で選択、--wav で音声ファイルを流す
 nix shell --impure --expr \
   'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
-  -c python3 poc_mic.py
+  -c python3 poc_vad.py
+
+# 構成・モデルの精度比較（CER / RTF）
+nix shell --impure --expr \
+  'with import <nixpkgs> {}; python313.withPackages (p: [p.sherpa-onnx p.numpy p.sounddevice])' \
+  -c python3 bench_asr.py
 ```
+
+`poc_mic.py` は全バッファ再デコード方式（無音で確定テキストが壊れる問題あり、
+比較用に残置）。
 
 ## PoC 計測結果 (r995, 16 threads, 2026-08-01)
 
-- 13 秒バッファの全再デコード: 73〜136ms（400ms 周期に対し余裕）
-- 部分テキストの安定性: ほぼ追記のみ（13.4 秒間で軽微な修正 1 回）
-- 認識精度: ニュース読み上げ音声をほぼ完全に認識（句読点なし）
+全バッファ再デコード方式の限界:
+
+- 13 秒バッファ: 73〜136ms。33 秒バッファ: 343ms（400ms 周期の限界）
+- **後ろに無音が伸びると確定済みのテキストが壊れる**。6.6 秒の発話に
+  32 秒の無音を足すと語尾が欠落（offline zipformer は全バッファに
+  attention をかけるため）
+
+VAD セグメント方式（現行）:
+
+- 確定セグメントは 1 度だけデコードして以後不変。無音を挟んでも壊れない
+- デコード時間は発話長で頭打ち（実測 15〜60ms）
+- VAD は区切りの決定のみに使い、デコードは前後 0.3 秒を足した区間で行う
+  （パディングなしでは「ヤンバルクイナ」が「クイナ」になるなど語頭が落ちる）
+
+精度比較 (CER, モデル同梱の test_wavs 50.5 秒):
+
+| 構成 | CER | RTF |
+| --- | --- | --- |
+| zipformer int8 greedy | 3.54% | 0.010 |
+| zipformer int8 beam4/8 | 3.54% | 0.014 |
+| zipformer fp32 greedy/beam4 | 3.54% | 0.012 |
+| SenseVoice small (int8) | 10.61% | 0.009 |
+
+beam search も fp32 も精度差なし。SenseVoice は 3 倍悪い。
 
 ## ロードマップ
 
 1. [x] PoC: 逐次デコードの遅延・安定性計測
-2. [ ] マイク体感テスト（poc_mic.py）
-3. [ ] オーバーレイ表示（GTK4 layer-shell、画面下部バー）
-4. [ ] トグル制御（UNIX ソケット）+ wtype 確定入力 + 句読点後処理
-5. [ ] flake 化・systemd ユーザーサービス・nixfiles 組み込み
+2. [x] マイク体感テスト（実用的な精度・体感を確認）
+3. [x] VAD セグメント方式（無音によるテキスト破壊とデコード時間増大の解消）
+4. [ ] オーバーレイ表示（GTK4 layer-shell、画面下部バー）
+5. [ ] トグル制御（UNIX ソケット）+ wtype 確定入力 + 句読点後処理
+6. [ ] flake 化・systemd ユーザーサービス・nixfiles 組み込み
