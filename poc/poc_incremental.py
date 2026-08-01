@@ -17,7 +17,7 @@ import numpy as np
 import sherpa_onnx
 
 MODEL_DIR = (
-    Path(__file__).parent
+    Path(__file__).resolve().parent.parent
     / "models"
     / "sherpa-onnx-zipformer-ja-reazonspeech-2024-08-01"
 )
