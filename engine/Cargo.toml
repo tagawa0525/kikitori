@@ -1,0 +1,14 @@
+[package]
+name = "kikitori-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# nixpkgs の libsherpa-onnx-c-api が 1.13.3 のため固定する。
+# sys 側の FFI は版ごとの手書きで、版ずれは構造体レイアウトの齟齬になる
+sherpa-onnx = { version = "=1.13.3", default-features = false, features = ["shared"] }
+hound = "3"
+
+[lib]
+name = "kikitori_engine"
+path = "src/lib.rs"
