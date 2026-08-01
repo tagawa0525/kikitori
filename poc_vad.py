@@ -57,6 +57,7 @@ class Params:
     # 無声化した語尾を VAD が無音と判定して切るため、前より厚くする。
     # 次のセグメントは min_silence 以上空くので発話に食い込む心配はない
     lookback: float = 1.0  # 部分デコードの遡り幅（VAD の検出遅れの吸収）
+    max_leading_gap: float = 3.0  # 取りこぼしを拾う未転写区間の上限
     min_silence: float = 0.5  # これ未満の間は文中の息継ぎとみなし区切らない
     max_speech: float = 25.0  # 無区切りで話し続けた場合の強制確定。
     # SenseVoice は区間長にほとんど影響されず、長いほうがわずかに良い
@@ -86,6 +87,10 @@ def zipformer(threads: int) -> sherpa_onnx.OfflineRecognizer:
         tokens=str(MODEL_DIR / "tokens.txt"),
         num_threads=threads,
     )
+
+
+def _is_speech(samples: np.ndarray) -> bool:
+    return bool(len(samples)) and float(np.sqrt(np.mean(samples**2))) > SILENCE_RMS
 
 
 def strip_japanese_spaces(text: str) -> str:
@@ -140,6 +145,7 @@ class Segmenter:
         self._pad_tail = int(params.pad_tail * SAMPLE_RATE)
         self._lookback = int(params.lookback * SAMPLE_RATE)
         self._max_speech = int(params.max_speech * SAMPLE_RATE)
+        self._max_leading_gap = int(params.max_leading_gap * SAMPLE_RATE)
         self._committed_until = 0  # ここまでは確定済み（重複デコードを防ぐ）
         self._fed = 0  # VAD に投入済みのサンプル数
         self._speech_start: int | None = None  # 進行中の発話の開始位置
@@ -153,6 +159,14 @@ class Segmenter:
     def _commit(self, begin: int, end: int, speech_end: int) -> str | None:
         """[begin, end) を確定させる。end は後パディング込み、speech_end は
         実際に発話が終わった位置で、次の区間の開始下限になる。"""
+        # 直前の未転写区間に声が乗っていれば取りこぼしなので含める。
+        # silero は起動直後や話し始めの検出が遅れることがあり
+        # （録音開始と同時に話すと「これから音声入力の」が落ちた）、
+        # 前パディングだけでは戻らない。無音なら含めない（無音を足すほど
+        # 認識は落ちるため）
+        gap = self.recording.data[self._committed_until : begin]
+        if 0 < len(gap) <= self._max_leading_gap and _is_speech(gap):
+            begin = self._committed_until
         begin = max(begin, self._committed_until)
         if end - begin < MIN_SEGMENT_SAMPLES:
             return None
@@ -174,8 +188,7 @@ class Segmenter:
             # 後パディングが無音なら次の区間の開始を speech_end に戻す
             # （語頭のために少し重ねる）。そこに既に声が乗っている
             # 連続発話の場合は end まで確定済みとし、単語の重複を避ける
-            tail = audio[speech_end:end]
-            if len(tail) and float(np.sqrt(np.mean(tail**2))) > SILENCE_RMS:
+            if _is_speech(audio[speech_end:end]):
                 speech_end = end
             text = self._commit(seg.start - self._pad_head, end, speech_end)
             if text is not None:
