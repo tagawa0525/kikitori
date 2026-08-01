@@ -5,8 +5,10 @@
 //! v0 は接続を 1 本ずつ順次処理する（クライアントは自分たちのみのため）。
 
 use std::io::{BufReader, BufWriter, Write};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use kikitori_engine::replace::Replacer;
 use kikitori_engine::segmenter::{sensevoice, Params, Segmenter, SenseVoicePaths, SAMPLE_RATE};
@@ -79,18 +81,47 @@ fn main() {
         .unwrap_or_else(|e| panic!("{} に bind できない: {e}", args.socket.display()));
     eprintln!("listening: {}", args.socket.display());
 
+    // セッションは常に 1 本、ただし最新の接続を優先する。
+    // 切り忘れたクライアントが残っていても、次のトグル（新しい接続）が
+    // 先行セッションを蹴って進める。蹴られた側はソケット切断を検知して
+    // 自分で終了する（無言でブロックさせない）
+    let recognizer = Arc::new(recognizer);
+    let replacer = Arc::new(replacer);
+    // 注意: 接続の強いクローンを main が持ち続けてはいけない。セッション
+    // スレッド終了後もソケットが開いたままになり、クライアントが EOF を
+    // 待って永遠にブロックする（実際に起きた）。Weak で持ち、締める時だけ
+    // upgrade する
+    let mut current: Option<(std::sync::Weak<UnixStream>, std::thread::JoinHandle<()>)> = None;
     for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                if let Err(e) = handle(stream, &recognizer, &args.vad_model, &replacer) {
-                    // 切断は正常系（クライアントが閉じただけ）
-                    if e.kind() != std::io::ErrorKind::UnexpectedEof {
-                        eprintln!("接続エラー: {e}");
-                    }
+        let stream = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("accept 失敗: {e}");
+                continue;
+            }
+        };
+        if let Some((old, join)) = current.take() {
+            if let Some(peer) = old.upgrade() {
+                eprintln!("新しい接続が来たため先行セッションを終了する");
+                let _ = peer.shutdown(Shutdown::Both);
+            }
+            let _ = join.join(); // decode の同時実行はさせない（完全に直列）
+        }
+        let peer = Arc::new(stream.try_clone().expect("ソケット複製に失敗"));
+        let weak = Arc::downgrade(&peer);
+        let recognizer = recognizer.clone();
+        let replacer = replacer.clone();
+        let vad_model = args.vad_model.clone();
+        let join = std::thread::spawn(move || {
+            let _closer = peer; // スレッド終了と同時にクローンも閉じる
+            if let Err(e) = handle(stream, &recognizer, &vad_model, &replacer) {
+                // 切断は正常系（クライアントが閉じた / 蹴られた）
+                if e.kind() != std::io::ErrorKind::UnexpectedEof {
+                    eprintln!("接続エラー: {e}");
                 }
             }
-            Err(e) => eprintln!("accept 失敗: {e}"),
-        }
+        });
+        current = Some((weak, join));
     }
 }
 

@@ -237,9 +237,11 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         let mut session: Vec<String> = Vec::new();
         std::thread::spawn(move || loop {
             let Ok(frame) = read_frame(&mut reader) else {
-                eprintln!("[overlay] エンジン切断");
-                events.send(EngineEvent::Status("エンジン切断".into()));
-                return;
+                // 切断 = 蹴られた（別クライアントが開始した）かエンジン停止。
+                // 残っても意味がないので入力せずに終了する
+                eprintln!("[overlay] エンジン切断のため終了");
+                let _ = std::fs::remove_file(ctl_path());
+                std::process::exit(1);
             };
             let get = |p: &[u8]| {
                 serde_json::from_slice::<serde_json::Value>(p)
