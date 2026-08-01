@@ -203,17 +203,11 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
             .map(|d| d.name().to_owned())
             .unwrap_or_default()
     );
-    let mut counter = 0u32;
     let stream = device
         .build_input_stream(
             config.config(),
             move |data: &[f32], _| {
                 let mono = downmix(data, channels);
-                counter += 1;
-                if counter.is_multiple_of(100) {
-                    let rms = (mono.iter().map(|x| x * x).sum::<f32>() / mono.len() as f32).sqrt();
-                    eprintln!("[overlay] 音声 {counter} チャンク目 RMS={rms:.4}");
-                }
                 let _ = audio_tx.send(f32_to_s16le(&downsample(&mono, factor)));
             },
             |e| eprintln!("[overlay] キャプチャエラー: {e}"),
@@ -247,7 +241,6 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
                 events.send(EngineEvent::Status("エンジン切断".into()));
                 return;
             };
-            eprintln!("[overlay] 受信 0x{:02X}", frame.kind);
             let get = |p: &[u8]| {
                 serde_json::from_slice::<serde_json::Value>(p)
                     .ok()
@@ -265,13 +258,8 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
                 proto::STOPPED => {
                     // 停止確定: このセッションの全文を wtype で入力
                     let text: String = session.drain(..).collect();
-                    eprintln!(
-                        "[overlay] STOPPED: {} 文字を wtype へ",
-                        text.chars().count()
-                    );
                     if !text.is_empty() {
                         let st = std::process::Command::new("wtype").arg(&text).status();
-                        eprintln!("[overlay] wtype 結果: {st:?}");
                         let ok = st.map(|s| s.success()).unwrap_or(false);
                         if !ok {
                             eprintln!("[overlay] wtype 失敗");
@@ -300,7 +288,6 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     // 送信ループ: 停止指示が来るまで AUDIO を流し続ける
     loop {
         if ctl_rx.try_recv().is_ok() {
-            eprintln!("[overlay] 停止指示 → STOP");
             events.send(EngineEvent::Recording(false));
             let _ = std::fs::remove_file(ctl_path());
             if write_frame(&mut writer, proto::STOP, b"{}").is_err() {
