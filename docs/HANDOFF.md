@@ -356,6 +356,13 @@ LAN エンジン × クロスプラットフォーム）を満たすものは存
   上書きできず Permission denied になる。devShell の shellHook で
   書き込み可能なキャッシュ（`~/.cache/kikitori/<store名>/lib`）へ複製して
   そちらを指している（flake.nix 参照）
+- **このディレクトリに gcc ランタイムを入れてはいけない**（SIGSEGV の実績あり）。
+  cargo は build script を `LD_LIBRARY_PATH=target/debug` で起動し、
+  build.rs はこのディレクトリの全 .so を target/debug へ O_TRUNC でコピーする。
+  libgcc_s を混ぜると 2 回目以降のビルドで「自分がマップ中の libgcc_s を
+  自分で truncate」して即死する（strace で特定）。sherpa-onnx-sys が
+  直接リンクする libstdc++ の解決は、rpath に stdenv.cc.cc.lib を
+  **別ディレクトリとして**足すことで行う
 - sys クレートは FFI が手書きで **bindgen を使わない**ため、libclang を
   ビルド閉包に持ち込まずに済む
 - nixpkgs の `sherpa-onnx` は `BUILD_SHARED_LIBS=true` で

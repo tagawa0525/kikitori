@@ -21,13 +21,17 @@
             # sherpa-onnx-sys は SHERPA_ONNX_LIB_DIR の 1 ディレクトリから
             # libsherpa-onnx-c-api と libonnxruntime の両方をリンクするため、
             # 2 パッケージの lib/ を 1 つに合成する
+            # 注意: ここに gcc ランタイム（stdenv.cc.cc.lib）を入れてはいけない。
+            # sherpa-onnx-sys の build.rs はこのディレクトリの全 .so を
+            # target/debug へコピーするが、cargo は build script を
+            # LD_LIBRARY_PATH=target/debug で起動するため、2 回目以降の
+            # ビルドで「自分がマップ中の libgcc_s を自分で truncate」して
+            # SIGSEGV する。libstdc++ の解決は rpath 側で行う（下記）
             sherpaLibs = pkgs.symlinkJoin {
               name = "sherpa-libs";
               paths = [
                 pkgs.sherpa-onnx
                 pkgs.onnxruntime
-                # sherpa-onnx-sys が実行バイナリに libstdc++ を直接リンクする
-                pkgs.stdenv.cc.cc.lib
               ];
             };
           in
@@ -60,8 +64,10 @@
               pkgs.rust-analyzer
             ];
 
-            # 実行時: 生成バイナリに rpath を焼き込み、shell 外でも動くようにする
-            RUSTFLAGS = "-C link-arg=-Wl,-rpath,${sherpaLibs}/lib";
+            # 実行時: 生成バイナリに rpath を焼き込み、shell 外でも動くようにする。
+            # libstdc++（sherpa-onnx-sys が直接リンクする）は別ディレクトリで
+            # rpath に足す（sherpaLibs に混ぜると上記 SIGSEGV の原因になる）
+            RUSTFLAGS = "-C link-arg=-Wl,-rpath,${sherpaLibs}/lib -C link-arg=-Wl,-rpath,${pkgs.stdenv.cc.cc.lib}/lib";
 
             # ビルド時: sherpa-onnx-sys の GitHub ダウンロードを短絡する。
             # store を直接指すと、build.rs が fs::copy で読み取り専用の
