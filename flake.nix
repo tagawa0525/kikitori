@@ -6,7 +6,7 @@
   };
 
   outputs =
-    { self, nixpkgs }:
+    inputs@{ self, nixpkgs }:
     let
       systems = [
         "x86_64-linux"
@@ -96,6 +96,118 @@
           };
         }
       );
+
+      packages = forAllSystems (
+        pkgs: sherpaLibs: rec {
+          default = kikitori;
+          kikitori = pkgs.rustPlatform.buildRustPackage {
+            pname = "kikitori";
+            version = "0.1.0";
+            src = pkgs.lib.cleanSource ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              pkgs.makeWrapper
+            ];
+            buildInputs = [
+              pkgs.alsa-lib
+              pkgs.libxkbcommon # smithay-client-toolkit (iced_layershell 経由)
+            ];
+            RUSTFLAGS = "-C link-arg=-Wl,-rpath,${sherpaLibs}/lib -C link-arg=-Wl,-rpath,${pkgs.stdenv.cc.cc.lib}/lib";
+            # store を直指定すると build.rs の .so コピーが read-only になり
+            # build script 再実行時に壊れる（devShell と同じ問題）。
+            # 書き込み可能な複製を向ける
+            preBuild = ''
+              mkdir -p "$TMPDIR/sherpa-libs"
+              cp -L ${sherpaLibs}/lib/*.so* "$TMPDIR/sherpa-libs/"
+              chmod u+w "$TMPDIR"/sherpa-libs/*
+              export SHERPA_ONNX_LIB_DIR="$TMPDIR/sherpa-libs"
+            '';
+            postInstall = ''
+              # 開発・検証用バイナリは配布しない
+              rm -f $out/bin/parity $out/bin/wavclient $out/bin/kikitori-cli
+              # cargoInstallHook が 2 バイナリを入れたことを明示的に検証する
+              # （workspace ルートに [package] が無い構成への懸念に対し、
+              # 動いている実証 + 退行したら音を立てて落ちる保証で応える）
+              test -x $out/bin/kikitorid
+              test -x $out/bin/kikitori
+              wrapProgram $out/bin/kikitori \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.wtype ]} \
+                --prefix LD_LIBRARY_PATH : ${
+                  pkgs.lib.makeLibraryPath [
+                    pkgs.libxkbcommon
+                    pkgs.vulkan-loader
+                    pkgs.wayland
+                    pkgs.libGL
+                  ]
+                }
+            '';
+            meta.mainProgram = "kikitori";
+          };
+          # モデルの初回取得（nix store には入れない。HANDOFF §5 の方針どおり）
+          kikitori-setup = pkgs.writeShellApplication {
+            name = "kikitori-setup";
+            runtimeInputs = [
+              pkgs.curl
+              pkgs.bzip2
+              pkgs.gnutar
+            ];
+            text = ''
+              dir="''${XDG_DATA_HOME:-$HOME/.local/share}/kikitori"
+              mkdir -p "$dir"
+              base=https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models
+              sv=sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17
+              if [ ! -f "$dir/sensevoice/model.int8.onnx" ]; then
+                echo "SenseVoice を取得中（約 200MB）…"
+                curl --fail --show-error --retry 3 -L "$base/$sv.tar.bz2" | tar xj -C "$dir"
+                mkdir -p "$dir/sensevoice"
+                mv "$dir/$sv/model.int8.onnx" "$dir/$sv/tokens.txt" "$dir/sensevoice/"
+                rm -rf "''${dir:?}/''${sv:?}"
+              fi
+              if [ ! -f "$dir/silero_vad.onnx" ]; then
+                echo "silero VAD を取得中…"
+                curl --fail --show-error --retry 3 -L -o "$dir/silero_vad.onnx" \
+                  "$base/silero_vad.onnx"
+              fi
+              echo "完了: $dir"
+            '';
+          };
+        }
+      );
+
+      homeManagerModules.default =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          cfg = config.services.kikitori;
+          pkg = self.packages.${pkgs.system}.kikitori;
+          setup = self.packages.${pkgs.system}.kikitori-setup;
+          dataDir = "%h/.local/share/kikitori";
+        in
+        {
+          options.services.kikitori.enable = lib.mkEnableOption "kikitori 音声入力エンジン";
+          config = lib.mkIf cfg.enable {
+            home.packages = [
+              pkg
+              setup
+            ];
+            systemd.user.services.kikitorid = {
+              Unit.Description = "kikitori 音声認識エンジン";
+              Service = {
+                # モデル未取得のまま起動→即死→Restart ループを防ぐ
+                # （setup は冪等。取得済みなら何もしない）
+                ExecStartPre = "${setup}/bin/kikitori-setup";
+                ExecStart = "${pkg}/bin/kikitorid --sensevoice-dir ${dataDir}/sensevoice --vad-model ${dataDir}/silero_vad.onnx";
+                Restart = "on-failure";
+              };
+              Install.WantedBy = [ "default.target" ];
+            };
+          };
+        };
 
       formatter = forAllSystems (pkgs: _: pkgs.nixfmt-tree);
     };
