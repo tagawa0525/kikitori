@@ -15,8 +15,14 @@ pub enum Endpoint {
     Tcp(String),
 }
 
-pub fn parse_endpoint(_value: &str) -> Endpoint {
-    todo!()
+pub fn parse_endpoint(value: &str) -> Endpoint {
+    if value.starts_with('/') {
+        Endpoint::Unix(value.into())
+    } else if value.contains(':') {
+        Endpoint::Tcp(value.into())
+    } else {
+        Endpoint::Unix(value.into())
+    }
 }
 
 /// 接続して (reader, writer) を返す。切断は writer 側 drop でなく
