@@ -189,7 +189,20 @@
           dataDir = "%h/.local/share/kikitori";
         in
         {
-          options.services.kikitori.enable = lib.mkEnableOption "kikitori 音声入力エンジン";
+          options.services.kikitori = {
+            enable = lib.mkEnableOption "kikitori 音声入力エンジン";
+            tcp = lib.mkOption {
+              type = lib.types.nullOr (lib.types.strMatching "[^[:space:]]+");
+              default = null;
+              example = "0.0.0.0:41717";
+              description = ''
+                TCP でも listen するアドレス。LAN 内の別マシンからエンジンを
+                共用する（クライアント側は KIKITORI_ENGINE=host:port）。
+                認証は持たないため、信頼できる LAN / SSH トンネル /
+                Tailscale 前提。null なら Unix ソケットのみ。
+              '';
+            };
+          };
           config = lib.mkIf cfg.enable {
             home.packages = [
               pkg
@@ -201,7 +214,9 @@
                 # モデル未取得のまま起動→即死→Restart ループを防ぐ
                 # （setup は冪等。取得済みなら何もしない）
                 ExecStartPre = "${setup}/bin/kikitori-setup";
-                ExecStart = "${pkg}/bin/kikitorid --sensevoice-dir ${dataDir}/sensevoice --vad-model ${dataDir}/silero_vad.onnx";
+                ExecStart =
+                  "${pkg}/bin/kikitorid --sensevoice-dir ${dataDir}/sensevoice --vad-model ${dataDir}/silero_vad.onnx"
+                  + lib.optionalString (cfg.tcp != null) " --tcp ${cfg.tcp}";
                 Restart = "on-failure";
               };
               Install.WantedBy = [ "default.target" ];
