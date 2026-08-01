@@ -29,9 +29,11 @@ VAD の切り出しは語頭に食い込むため、パディングなしでは�
 """
 
 import argparse
+import re
 import time
 import wave
 from dataclasses import dataclass, fields
+from pathlib import Path
 
 import numpy as np
 import sherpa_onnx
@@ -56,10 +58,24 @@ class Params:
     # 次のセグメントは min_silence 以上空くので発話に食い込む心配はない
     lookback: float = 1.0  # 部分デコードの遡り幅（VAD の検出遅れの吸収）
     min_silence: float = 0.5  # これ未満の間は文中の息継ぎとみなし区切らない
-    max_speech: float = 6.0  # 無区切りで話し続けた場合の強制確定。
-    # 実音声では区間が長いほど内容が落ちる。実測グリッド（bench_data/voice1）
-    # では 6 秒 / 0.5 秒が最良で CER 8.2%、12 秒 / 0.8 秒では 29.5% だった
+    max_speech: float = 25.0  # 無区切りで話し続けた場合の強制確定。
+    # SenseVoice は区間長にほとんど影響されず、長いほうがわずかに良い
+    # （録音 4 本 210 秒で 6 秒 7.3% / 25 秒 7.0%）。25 秒でも部分デコードは
+    # 218ms で 400ms 周期に収まる。zipformer は 6 秒を外すと壊れた
     threshold: float = 0.5  # silero の発話判定しきい値
+
+
+SENSEVOICE_DIR = Path.home() / ".local/share/voxtype/models/sensevoice-small"
+
+
+def sensevoice(threads: int) -> sherpa_onnx.OfflineRecognizer:
+    return sherpa_onnx.OfflineRecognizer.from_sense_voice(
+        model=str(SENSEVOICE_DIR / "model.int8.onnx"),
+        tokens=str(SENSEVOICE_DIR / "tokens.txt"),
+        language="ja",
+        use_itn=True,
+        num_threads=threads,
+    )
 
 
 def zipformer(threads: int) -> sherpa_onnx.OfflineRecognizer:
@@ -70,6 +86,12 @@ def zipformer(threads: int) -> sherpa_onnx.OfflineRecognizer:
         tokens=str(MODEL_DIR / "tokens.txt"),
         num_threads=threads,
     )
+
+
+def strip_japanese_spaces(text: str) -> str:
+    """SenseVoice は日本語の途中に空白を入れる（「プルリクエスト の レビュー」）。
+    両隣が非 ASCII のものだけ落とし、英単語間の空白は残す。"""
+    return re.sub(r"(?<=[^\x00-\x7f]) +(?=[^\x00-\x7f])", "", text)
 
 
 class Recording:
@@ -101,7 +123,7 @@ class Segmenter:
         threads: int = 16,
     ) -> None:
         self.params = params
-        self.recognizer = recognizer or zipformer(threads)
+        self.recognizer = recognizer or sensevoice(threads)
         config = sherpa_onnx.VadModelConfig()
         config.silero_vad.model = str(VAD_MODEL)
         config.silero_vad.min_silence_duration = params.min_silence
@@ -126,7 +148,7 @@ class Segmenter:
         stream = self.recognizer.create_stream()
         stream.accept_waveform(SAMPLE_RATE, np.ascontiguousarray(samples))
         self.recognizer.decode_stream(stream)
-        return stream.result.text
+        return strip_japanese_spaces(stream.result.text)
 
     def _commit(self, begin: int, end: int, speech_end: int) -> str | None:
         """[begin, end) を確定させる。end は後パディング込み、speech_end は
@@ -303,6 +325,9 @@ def main() -> None:
     parser.add_argument("--quiet", action="store_true", help="部分テキストを出さない")
     parser.add_argument("--save", help="録音を wav に保存（後からパラメータ検証用）")
     parser.add_argument("--threads", type=int, default=16)
+    parser.add_argument(
+        "--model", default="sensevoice", choices=["sensevoice", "zipformer"]
+    )
     defaults = Params()
     for field in fields(Params):
         parser.add_argument(
@@ -317,7 +342,8 @@ def main() -> None:
         return
 
     params = Params(**{f.name: getattr(args, f.name) for f in fields(Params)})
-    segmenter = Segmenter(params, threads=args.threads)
+    builder = sensevoice if args.model == "sensevoice" else zipformer
+    segmenter = Segmenter(params, recognizer=builder(args.threads))
     if args.wav:
         run_wav(segmenter, args.wav, verbose=not args.quiet)
     else:
