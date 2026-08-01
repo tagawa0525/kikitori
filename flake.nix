@@ -192,7 +192,7 @@
           options.services.kikitori = {
             enable = lib.mkEnableOption "kikitori 音声入力エンジン";
             tcp = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
+              type = lib.types.nullOr (lib.types.strMatching "[^[:space:]]+");
               default = null;
               example = "0.0.0.0:41717";
               description = ''

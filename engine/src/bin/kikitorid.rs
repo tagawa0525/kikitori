@@ -113,12 +113,14 @@ fn main() {
     });
 
     if let Some(addr) = args.tcp.clone() {
+        // bind 失敗はここ（メインスレッド）で失敗終了させる。スレッド内で
+        // panic すると Unix 側だけで起動継続し、TCP が無効なのに成功扱いになる
+        let tcp_listener = std::net::TcpListener::bind(&addr)
+            .unwrap_or_else(|e| panic!("{addr} に bind できない: {e}"));
+        eprintln!("listening (tcp): {addr}");
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            let listener = std::net::TcpListener::bind(&addr)
-                .unwrap_or_else(|e| panic!("{addr} に bind できない: {e}"));
-            eprintln!("listening (tcp): {addr}");
-            for stream in listener.incoming() {
+            for stream in tcp_listener.incoming() {
                 match stream {
                     Ok(s) => {
                         let _ = s.set_nodelay(true); // PARTIAL の遅延を抑える

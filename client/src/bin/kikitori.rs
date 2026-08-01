@@ -18,20 +18,11 @@ use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
 use kikitori_client::audio::{downmix, downsample, f32_to_s16le};
+use kikitori_client::engine_endpoint;
 use kikitori_proto::{self as proto, read_frame, write_frame};
 
 const TARGET_RATE: u32 = 16_000;
 const BAR_HEIGHT: u32 = 76;
-
-fn engine_endpoint(cli: Option<String>) -> kikitori_proto::endpoint::Endpoint {
-    let value = cli
-        .or_else(|| std::env::var("KIKITORI_ENGINE").ok())
-        .unwrap_or_else(|| {
-            let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
-            format!("{dir}/kikitori.sock")
-        });
-    kikitori_proto::endpoint::parse_endpoint(&value)
-}
 
 fn ctl_path() -> String {
     let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
