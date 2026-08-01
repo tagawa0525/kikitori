@@ -186,11 +186,12 @@ class Segmenter:
             self.vad.pop()
             speech_end = seg.start + len(seg.samples)
             end = min(len(audio), speech_end + self._pad_tail)
-            # 後パディングが無音なら次の区間の開始を speech_end に戻す
-            # （語頭のために少し重ねる）。そこに既に声が乗っている
-            # 連続発話の場合は end まで確定済みとし、単語の重複を避ける
+            # 後パディングは、そこが無音のときだけ意味がある（無声化した
+            # 語尾を拾うため）。発話が続いている最中に VAD が切った場合に
+            # 伸ばすと、次の区間との境界が語中に落ちて単語が割れる
+            # （「このくらいの」→「いますこの」＋「ラの長さ」）
             if _is_speech(audio[speech_end:end]):
-                speech_end = end
+                end = speech_end
             text = self._commit(seg.start - self._pad_head, end, speech_end)
             if text is not None:
                 finalized.append(text)
