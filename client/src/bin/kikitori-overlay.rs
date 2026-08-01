@@ -5,8 +5,8 @@
 //! keyboard_interactivity は None にして、入力先アプリのフォーカスを奪わない。
 //!
 //! 実行: kikitori-overlay [--socket PATH]（kikitorid が起動済みであること）
-//! トグル: `kikitori-toggle` が制御ソケット（kikitori-ctl.sock）に
-//! "toggle" を書くと録音開始/停止。停止時は確定テキストを wtype で入力する。
+//! スポーン型: 1 回目の起動が録音セッション、2 回目の起動は停止指示
+//! （制御ソケット接続）。停止時は確定テキストを wtype で入力して終了する。
 
 use std::io::{BufReader, BufWriter, Write as _};
 use std::os::unix::net::UnixStream;
@@ -210,7 +210,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
             move |data: &[f32], _| {
                 let mono = downmix(data, channels);
                 counter += 1;
-                if counter % 100 == 0 {
+                if counter.is_multiple_of(100) {
                     let rms = (mono.iter().map(|x| x * x).sum::<f32>() / mono.len() as f32).sqrt();
                     eprintln!("[overlay] 音声 {counter} チャンク目 RMS={rms:.4}");
                 }
@@ -284,49 +284,41 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         });
     }
 
-    // 制御ソケット: "toggle" 1 行で録音開始/停止
+    // 表示を録音状態にし、次の起動（= 停止指示）を制御ソケットで待つ
+    events.send(EngineEvent::Recording(true));
+    status("録音中…");
     let (ctl_tx, ctl_rx) = mpsc::channel::<()>();
     std::thread::spawn(move || {
-        let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
-        let path = format!("{dir}/kikitori-ctl.sock");
-        let _ = std::fs::remove_file(&path);
-        let listener =
-            std::os::unix::net::UnixListener::bind(&path).expect("制御ソケットに bind できない");
-        for conn in listener.incoming().flatten() {
-            drop(conn); // 接続 = トグル（中身は読まない）
+        let listener = std::os::unix::net::UnixListener::bind(ctl_path())
+            .expect("制御ソケットに bind できない");
+        if let Ok((conn, _)) = listener.accept() {
+            drop(conn); // 接続 = 停止指示
             let _ = ctl_tx.send(());
         }
     });
 
-    // 送信ループ: 録音中だけ AUDIO を流す。トグルで START/STOP
-    let mut recording = false;
+    // 送信ループ: 停止指示が来るまで AUDIO を流し続ける
     loop {
         if ctl_rx.try_recv().is_ok() {
-            recording = !recording;
-            let kind = if recording { proto::START } else { proto::STOP };
-            if write_frame(&mut writer, kind, b"{}").is_err() {
+            eprintln!("[overlay] 停止指示 → STOP");
+            events.send(EngineEvent::Recording(false));
+            let _ = std::fs::remove_file(ctl_path());
+            if write_frame(&mut writer, proto::STOP, b"{}").is_err() {
                 return;
             }
             let _ = writer.flush();
-            eprintln!(
-                "[overlay] toggle → {}",
-                if recording { "録音" } else { "停止" }
-            );
-            if recording {
-                events.send(EngineEvent::Commit(String::new())); // 前回表示のクリア
-                events.send(EngineEvent::Partial(String::new()));
-                status("録音中…");
-                while audio_rx.try_recv().is_ok() {} // 溜まった音声を捨てる
+            // 以降は送らない。STOPPED 受信側が wtype して exit する
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
         match audio_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            Ok(bytes) if recording => {
+            Ok(bytes) => {
                 if write_frame(&mut writer, proto::AUDIO, &bytes).is_err() {
                     return;
                 }
                 let _ = writer.flush();
             }
-            Ok(_) => {}
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
