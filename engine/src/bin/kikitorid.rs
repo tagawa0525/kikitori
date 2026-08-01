@@ -32,8 +32,9 @@ struct Args {
     tcp: Option<String>,
 }
 
-/// 推論スレッド数の既定値: 論理 CPU の半分（SMT 環境でおおむね物理コア数。
-/// r995: 32→16 は実測済みの値と一致、x1ng1: 8→4）。--threads で上書き可能
+/// 推論スレッド数の既定値: 論理 CPU 数の半分（SMT 環境ではおおむね物理
+/// コア数。r995: 32→16 は実測済みの値と一致、x1ng1: 8→4）。
+/// CPU 数を取得できない環境では 4 に落とす。--threads で上書き可能
 fn default_threads() -> i32 {
     std::thread::available_parallelism()
         .map(|n| (n.get() / 2).max(1))
