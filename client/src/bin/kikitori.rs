@@ -1,5 +1,5 @@
-//! オーバーレイクライアント: 画面下部の layer-shell バーに部分/確定テキストを
-//! 逐次表示する（Windows の「聞き取りバー」方式）。
+//! kikitori クライアント: マイク → エンジン → 画面下部バーに逐次表示 →
+//! 停止時に wtype 入力（Windows の「聞き取りバー」方式）。
 //!
 //! v0 は表示のみの検証用マイルストーン（確定入力は kikitori-cli --wtype で）。
 //! keyboard_interactivity は None にして、入力先アプリのフォーカスを奪わない。
@@ -91,7 +91,7 @@ impl EventSender {
 }
 
 fn namespace() -> String {
-    "kikitori-overlay".into()
+    "kikitori".into()
 }
 
 fn update(app: &mut App, message: Message) -> Task<Message> {

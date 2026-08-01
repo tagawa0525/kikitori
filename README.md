@@ -20,7 +20,7 @@ nix develop  # または direnv allow
 
 cargo run -p kikitori-engine --bin kikitorid   # エンジン（モデル常駐）
 cargo run -p kikitori-client --bin kikitori-cli        # CLI クライアント
-cargo run -p kikitori-client --bin kikitori-overlay    # 画面下部バー表示
+cargo run -p kikitori-client --bin kikitori    # クライアント（バー表示+入力）
 ```
 
 ## PoC

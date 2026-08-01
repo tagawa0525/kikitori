@@ -183,7 +183,7 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
      48kHz ステレオ限定 + bindgen が要るため v0 では不採用（§8.3 は
      この決定で上書き）。整数倍レートからの自前変換も client/src/audio.rs に
      実装済み
-   - [x] iced オーバーレイ `kikitori-overlay`（iced 0.14 +
+   - [x] iced オーバーレイ `kikitori`（iced 0.14 +
      iced_layershell 0.19、ビルド済み）。画面下部の固定バーに部分/確定を
      逐次表示、keyboard_interactivity=None でフォーカスを奪わない。
      **COSMIC での実描画をユーザー確認済み（2026-08-02）**。
@@ -194,7 +194,7 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
    - [x] 置換辞書: エンジン側で確定・部分の両方に適用
      （`~/.config/kikitori/replace.tsv`、例は docs/replace.example.tsv、
      `--replace` で上書き）。wav 経由で「ポドマン→Podman」の適用を確認済み
-   - [x] トグル統合: `kikitori-overlay`（スポーン型: 1 回目の起動=録音開始、2 回目=停止・入力・終了。常駐しない。アイドル時のクライアントメモリはゼロ）。
+   - [x] トグル統合: `kikitori`（スポーン型: 1 回目の起動=録音開始、2 回目=停止・入力・終了。常駐しない。アイドル時のクライアントメモリはゼロ）。
      開始で START + 溜まった音声破棄、停止で STOP → STOPPED まで受けて
      wtype 入力。実機での動作確認はユーザー待ち。旧設計メモ:
      オーバーレイを常駐化し、制御ソケット（例: kikitori-ctl.sock）で
