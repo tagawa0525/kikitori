@@ -163,10 +163,12 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
 4. [x] **モデル選定**: SenseVoice に切り替え（§4.5）。CER 28.3%→7.0%
 5. [x] **プロトコル定義**: `PROTOCOL.md`（PCM in / partial・commit out。
    トグルはクライアントの関心事としてプロトコル外）
-6. [x] **Rust エンジン（コア）**: `engine/` クレートに `Segmenter` を移植。
-   bench_data 5 本で Python 版と**確定テキストがバイト単位で一致**
-   （パリティ手順: `cargo run -p kikitori-engine --bin parity` と
-   Python 側ダンプの diff）。残: プロトコルサーバ実装
+6. [x] **Rust エンジン**: `engine/` クレートに `Segmenter` を移植し、
+   PROTOCOL.md v0 を話すデーモン `kikitorid` を実装。検証は 2 段:
+   - `parity` バイナリ: bench_data 5 本で Python 版と確定テキストが
+     バイト単位で一致
+   - `wavclient` バイナリ: ソケット経由でも直接実行と一致
+   起動: `kikitorid`（--socket / --sensevoice-dir / --vad-model / --threads）
 7. [ ] **Rust クライアント**: iced オーバーレイ（Wayland: layer-shell）+
    wtype + トグル。まず Unix ソケットで同一マシン完結。
    カーソル位置追従は Wayland では不可能なので画面下部の固定バー
