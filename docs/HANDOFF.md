@@ -169,9 +169,18 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
      バイト単位で一致
    - `wavclient` バイナリ: ソケット経由でも直接実行と一致
    起動: `kikitorid`（--socket / --sensevoice-dir / --vad-model / --threads）
-7. [ ] **Rust クライアント**: iced オーバーレイ（Wayland: layer-shell）+
-   wtype + トグル。まず Unix ソケットで同一マシン完結。
-   カーソル位置追従は Wayland では不可能なので画面下部の固定バー
+7. [~] **Rust クライアント**:
+   - [x] CLI 版 `kikitori-cli`（client/ クレート）: マイク → デーモン →
+     ターミナル逐次表示 → Ctrl+C で確定、--wtype で入力。マイク疎通確認済み、
+     音声つきの実地テストはユーザー待ち
+   - [x] 音声取得の方針: cpal 既定ホスト（ALSA）で 16kHz mono を直接要求
+     （PipeWire の alsa プラグが変換）。ネイティブ PipeWire ホストは
+     48kHz ステレオ限定 + bindgen が要るため v0 では不採用（§8.3 は
+     この決定で上書き）。整数倍レートからの自前変換も client/src/audio.rs に
+     実装済み
+   - [ ] iced オーバーレイ（Wayland: layer-shell、他: 最前面窓）+ トグル。
+     カーソル位置追従は Wayland では不可能なので画面下部の固定バー。
+     `iced_layershell` の COSMIC 動作確認が最初の関門
 8. [ ] **TCP トランスポート**: x1ng1 等から r995 のエンジンを使う（§8.0）
 9. [ ] **配布**: flake 化（パッケージ + Home Manager モジュール or
    ショートカット差し替え手順）、systemd ユーザーサービス、
@@ -217,6 +226,9 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
   PR フロー適用外（gh-wait-review.sh が exit 2 を返すケース）。
   公開するかどうかはユーザーに確認すること
 - リポジトリ名「kikitori」は仮称。ユーザーが変更する可能性あり
+- Rust ワークスペース: `proto/`（フレーミング、依存なし）、`engine/`
+  （sherpa 依存はここだけ）、`client/`（cpal、sherpa 非依存 —
+  Win/Mac 展開時にモデル実行系を持ち込まないため）
 
 ## 8. Rust 実装（方針決定済み、着手前）
 
