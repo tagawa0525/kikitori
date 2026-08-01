@@ -50,6 +50,9 @@
               # Rust（engine/ ほか）
               pkgs.pkg-config
               pkgs.alsa-lib # cpal（client の音声取得）
+              pkgs.libxkbcommon # iced/winit が dlopen する
+              pkgs.vulkan-loader # wgpu
+              pkgs.wayland
               pkgs.rustc
               pkgs.cargo
               pkgs.clippy
@@ -67,6 +70,15 @@
             # 書き込み可能なキャッシュへ複製してそちらを指す
             # （ディレクトリ名に store ハッシュを含め、更新時に作り直す）
             shellHook = ''
+              # iced/winit/wgpu が実行時に dlopen するライブラリ
+              export LD_LIBRARY_PATH="${
+                pkgs.lib.makeLibraryPath [
+                  pkgs.libxkbcommon
+                  pkgs.vulkan-loader
+                  pkgs.wayland
+                  pkgs.libGL
+                ]
+              }:$LD_LIBRARY_PATH"
               export SHERPA_ONNX_LIB_DIR="''${XDG_CACHE_HOME:-$HOME/.cache}/kikitori/${baseNameOf sherpaLibs}/lib"
               if [ ! -d "$SHERPA_ONNX_LIB_DIR" ]; then
                 mkdir -p "$SHERPA_ONNX_LIB_DIR"
