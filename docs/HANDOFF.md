@@ -163,8 +163,10 @@ SenseVoice は 3 倍悪い — が、この結論は実音声では逆転する�
 4. [x] **モデル選定**: SenseVoice に切り替え（§4.5）。CER 28.3%→7.0%
 5. [x] **プロトコル定義**: `PROTOCOL.md`（PCM in / partial・commit out。
    トグルはクライアントの関心事としてプロトコル外）
-6. [ ] **Rust エンジン**: `Segmenter` 移植。bench_data で Python 版と
-   CER 一致を受け入れ条件にする（§8.1〜8.2）
+6. [x] **Rust エンジン（コア）**: `engine/` クレートに `Segmenter` を移植。
+   bench_data 5 本で Python 版と**確定テキストがバイト単位で一致**
+   （パリティ手順: `cargo run -p kikitori-engine --bin parity` と
+   Python 側ダンプの diff）。残: プロトコルサーバ実装
 7. [ ] **Rust クライアント**: iced オーバーレイ（Wayland: layer-shell）+
    wtype + トグル。まず Unix ソケットで同一マシン完結。
    カーソル位置追従は Wayland では不可能なので画面下部の固定バー
@@ -325,8 +327,13 @@ LAN エンジン × クロスプラットフォーム）を満たすものは存
   **ダウンロードする**（Nix サンドボックスでは不可）。
   `default-features = false, features = ["shared"]` にしたうえで
   環境変数 `SHERPA_ONNX_LIB_DIR` を指すと短絡でき、ネットワークなしで通る
-- 指す先は `sherpa-onnx` と `onnxruntime` の `.so` を `symlinkJoin` で
-  1 ディレクトリにまとめたもの（両方が同じディレクトリに要る）
+- 指す先は `sherpa-onnx` と `onnxruntime` の `.so` を 1 ディレクトリに
+  まとめたもの（両方が同じディレクトリに要る）。ただし **store を直接
+  指してはいけない**: build.rs が `fs::copy` で読み取り専用パーミッション
+  ごと target/ に .so を複製するため、ビルドスクリプト再実行時（clippy 等）に
+  上書きできず Permission denied になる。devShell の shellHook で
+  書き込み可能なキャッシュ（`~/.cache/kikitori/<store名>/lib`）へ複製して
+  そちらを指している（flake.nix 参照）
 - sys クレートは FFI が手書きで **bindgen を使わない**ため、libclang を
   ビルド閉包に持ち込まずに済む
 - nixpkgs の `sherpa-onnx` は `BUILD_SHARED_LIBS=true` で
