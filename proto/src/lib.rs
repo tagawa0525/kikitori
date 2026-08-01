@@ -1,4 +1,5 @@
-//! docs/PROTOCOL.md v0 のフレーミング。
+//! docs/PROTOCOL.md v0 のフレーミング。エンジンとクライアントで共有する
+//! （クライアントに sherpa-onnx 依存を持ち込まないための独立クレート）。
 //! `[u32 LE: payload 長][u8: type][payload]`
 
 use std::io::{self, Read, Write};

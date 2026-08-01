@@ -1,0 +1,10 @@
+[package]
+name = "kikitori-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kikitori-proto = { path = "../proto" }
+cpal = "0.18"
+serde_json = "1"
+ctrlc = "3"

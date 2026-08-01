@@ -5,8 +5,8 @@ use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
-use kikitori_engine::proto::{self, read_frame, write_frame};
 use kikitori_engine::segmenter::SAMPLE_RATE;
+use kikitori_proto::{self as proto, read_frame, write_frame};
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();

@@ -26,6 +26,8 @@
               paths = [
                 pkgs.sherpa-onnx
                 pkgs.onnxruntime
+                # sherpa-onnx-sys が実行バイナリに libstdc++ を直接リンクする
+                pkgs.stdenv.cc.cc.lib
               ];
             };
           in
@@ -46,6 +48,8 @@
               pkgs.ruff
 
               # Rust（engine/ ほか）
+              pkgs.pkg-config
+              pkgs.alsa-lib # cpal（client の音声取得）
               pkgs.rustc
               pkgs.cargo
               pkgs.clippy

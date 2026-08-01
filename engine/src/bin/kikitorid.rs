@@ -8,8 +8,8 @@ use std::io::{BufReader, BufWriter, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
-use kikitori_engine::proto::{self, read_frame, write_frame};
 use kikitori_engine::segmenter::{sensevoice, Params, Segmenter, SenseVoicePaths, SAMPLE_RATE};
+use kikitori_proto::{self as proto, read_frame, write_frame};
 use sherpa_onnx::OfflineRecognizer;
 
 /// PARTIAL を送る周期（受信サンプル数基準。壁時計ではなくデータ量で
