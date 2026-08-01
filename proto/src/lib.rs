@@ -115,3 +115,5 @@ mod tests {
         assert!(read_frame(&mut Cursor::new(&header)).is_err());
     }
 }
+
+pub mod endpoint;
