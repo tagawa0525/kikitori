@@ -28,11 +28,16 @@ pub fn claim(path: &str) -> io::Result<Claim> {
         match UnixListener::bind(path) {
             Ok(listener) => return Ok(Claim::Recorder(listener)),
             Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
-                if UnixStream::connect(path).is_ok() {
-                    return Ok(Claim::Stopped);
+                match UnixStream::connect(path) {
+                    Ok(_) => return Ok(Claim::Stopped),
+                    // listener 不在を確定できる接続拒否だけを残骸と断定する。
+                    // 他の失敗（バックログ溢れ・権限等）で消すと、生きている
+                    // 先行インスタンスのソケットを壊しかねない
+                    Err(ce) if ce.kind() == io::ErrorKind::ConnectionRefused => {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    Err(ce) => return Err(ce),
                 }
-                // listener 不在のソケットファイル = 異常終了の残骸
-                let _ = std::fs::remove_file(path);
             }
             Err(e) => return Err(e),
         }
