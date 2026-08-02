@@ -11,7 +11,7 @@ use std::io::{BufReader, BufWriter, Write as _};
 use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use iced::widget::{column, container, text};
@@ -27,6 +27,8 @@ use kikitori_proto::{self as proto, read_frame, write_frame};
 
 const TARGET_RATE: u32 = 16_000;
 const BAR_HEIGHT: u32 = 76;
+/// 回復不能な失敗をバーに表示してから終了するまでの猶予（issue #6）。
+const FATAL_DISPLAY: Duration = Duration::from_secs(4);
 
 /// 計測基準点（main 先頭で初期化）。起動レイテンシの実測用（issue #11）。
 static T0: OnceLock<Instant> = OnceLock::new();
@@ -104,6 +106,8 @@ struct App {
     last_commit: String,
     partial: String,
     recording: bool,
+    /// 回復不能な失敗。録音状態と無関係にバーへ表示する（issue #6）
+    error: Option<String>,
 }
 
 #[to_layer_message]
@@ -118,6 +122,7 @@ enum EngineEvent {
     Partial(String),
     Commit(String),
     Recording(bool),
+    Fatal(String),
 }
 
 /// futures チャンネルへの同期送信ラッパ。
@@ -144,6 +149,7 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.partial.clear();
             }
             EngineEvent::Recording(b) => app.recording = b,
+            EngineEvent::Fatal(msg) => app.error = Some(msg),
         }
     }
     Task::none()
@@ -152,6 +158,20 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 fn view(app: &App) -> Element<'_, Message> {
     static FIRST_VIEW: std::sync::Once = std::sync::Once::new();
     FIRST_VIEW.call_once(|| trace("初回 view 呼び出し"));
+    // 回復不能な失敗は録音状態と無関係に表示する（issue #6: 無言で
+    // 消えると「ホットキーを押しても何も起きない」ように見える）
+    if let Some(err) = &app.error {
+        return container(
+            text(err.to_owned())
+                .size(20)
+                .color(Color::from_rgb(1.0, 0.55, 0.5))
+                .width(Length::Fill),
+        )
+        .padding([8, 16])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
+    }
     if !app.recording {
         // 待機中はバーを消す（背景も style 側で透明にする）
         return container(column![]).into();
@@ -180,7 +200,7 @@ fn view(app: &App) -> Element<'_, Message> {
 
 fn style(app: &App, _theme: &iced::Theme) -> iced::theme::Style {
     iced::theme::Style {
-        background_color: if app.recording {
+        background_color: if app.recording || app.error.is_some() {
             Color::from_rgba(0.08, 0.08, 0.10, 0.85)
         } else {
             Color::TRANSPARENT
@@ -216,6 +236,15 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     let mut ctl = CtlGuard(CTL_LISTENER.lock().unwrap().take());
     let events = EventSender(sender);
     let status = |s: &str| events.send(EngineEvent::Status(s.into()));
+    // 回復不能な失敗: バーに表示し、猶予の後に非ゼロ終了する（issue #6）。
+    // 制御ソケットは先に手放し、表示中の再押下が新しい試行になるようにする
+    let fatal = |ctl: CtlGuard, msg: String| {
+        eprintln!("[overlay] {msg}");
+        drop(ctl);
+        events.send(EngineEvent::Fatal(msg));
+        std::thread::sleep(FATAL_DISPLAY);
+        std::process::exit(1);
+    };
     let endpoint = engine_endpoint({
         let mut args = std::env::args().skip(1);
         let mut path = None;
@@ -231,15 +260,13 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let host = cpal::default_host();
     let Some(device) = host.default_input_device() else {
-        status("入力デバイスがない");
-        return;
+        return fatal(ctl, "入力デバイスがない".into());
     };
     let config = pick_input_config(&device);
     let channels = config.channels() as usize;
     let rate = config.sample_rate();
     if !rate.is_multiple_of(TARGET_RATE) {
-        status(&format!("サンプルレート {rate} 非対応"));
-        return;
+        return fatal(ctl, format!("サンプルレート {rate} 非対応"));
     }
     let factor = (rate / TARGET_RATE) as usize;
     eprintln!(
@@ -249,32 +276,40 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
             .map(|d| d.name().to_owned())
             .unwrap_or_default()
     );
-    let stream = device
-        .build_input_stream(
-            config.config(),
-            move |data: &[f32], _| {
-                let mono = downmix(data, channels);
-                let _ = audio_tx.send(f32_to_s16le(&downsample(&mono, factor)));
-            },
-            |e| eprintln!("[overlay] キャプチャエラー: {e}"),
-            None,
-        )
-        .expect("入力ストリームを開けない");
-    stream.play().expect("キャプチャ開始に失敗");
+    let stream = match device.build_input_stream(
+        config.config(),
+        move |data: &[f32], _| {
+            let mono = downmix(data, channels);
+            let _ = audio_tx.send(f32_to_s16le(&downsample(&mono, factor)));
+        },
+        |e| eprintln!("[overlay] キャプチャエラー: {e}"),
+        None,
+    ) {
+        Ok(s) => s,
+        Err(e) => return fatal(ctl, format!("入力ストリームを開けない: {e}")),
+    };
+    if let Err(e) = stream.play() {
+        return fatal(ctl, format!("キャプチャ開始に失敗: {e}"));
+    }
     trace("キャプチャ開始（stream.play 完了）");
 
     let conn = match kikitori_proto::endpoint::Connection::connect(&endpoint) {
         Ok(c) => c,
         Err(e) => {
-            status(&format!("エンジン {endpoint:?} に接続できない: {e}"));
-            return;
+            // エラー表示の猶予中はキャプチャ不要（キューに溜まるだけ）
+            drop(stream);
+            return fatal(ctl, format!("エンジン {endpoint:?} に接続できない: {e}"));
         }
     };
     let mut writer = BufWriter::new(conn.writer);
     let mut reader = BufReader::new(conn.reader);
-    write_frame(&mut writer, proto::HELLO, br#"{"version":0}"#).unwrap();
-    write_frame(&mut writer, proto::START, b"{}").unwrap();
-    writer.flush().unwrap();
+    let sent = write_frame(&mut writer, proto::HELLO, br#"{"version":0}"#)
+        .and_then(|()| write_frame(&mut writer, proto::START, b"{}"))
+        .and_then(|()| writer.flush());
+    if let Err(e) = sent {
+        drop(stream);
+        return fatal(ctl, format!("エンジンへ送信できない: {e}"));
+    }
     trace("エンジンへ START 送信");
     events.send(EngineEvent::Recording(true));
     status("録音中…");
