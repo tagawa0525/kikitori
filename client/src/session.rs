@@ -15,24 +15,22 @@ pub struct Session {
 impl Session {
     /// 確定テキストを追加する。
     pub fn push(&mut self, text: String) {
-        let _ = text;
-        todo!()
+        self.commits.push(text);
     }
 
     /// 確定が 1 つもないか。
     pub fn is_empty(&self) -> bool {
-        todo!()
+        self.commits.is_empty()
     }
 
     /// 表示用: 末尾 `n` 件の確定。件数が `n` に満たなければ全件。
     pub fn tail(&self, n: usize) -> &[String] {
-        let _ = n;
-        todo!()
+        &self.commits[self.commits.len().saturating_sub(n)..]
     }
 
     /// 入力用: 全確定の区切りなし連結。表示から隠れた古い確定も含む。
     pub fn text(&self) -> String {
-        todo!()
+        self.commits.concat()
     }
 }
 
