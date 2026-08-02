@@ -26,7 +26,7 @@ use kikitori_proto::{self as proto, read_frame, write_frame};
 const TARGET_RATE: u32 = 16_000;
 const BAR_HEIGHT: u32 = 76;
 
-/// プロセス開始時刻。起動レイテンシの実測用（issue #11）。
+/// 計測基準点（main 先頭で初期化）。起動レイテンシの実測用（issue #11）。
 static T0: OnceLock<Instant> = OnceLock::new();
 
 /// 起動からの経過時間つきでログを出す。
@@ -41,7 +41,7 @@ fn ctl_path() -> String {
 }
 
 pub fn main() -> Result<(), iced_layershell::Error> {
-    T0.set(Instant::now()).unwrap();
+    T0.get_or_init(Instant::now);
     // 数十文字のテキストを流すだけのバーに GPU は不要（issue #11）。
     // iced_layershell が iced のデフォルト機能（wgpu）を要求するため
     // コンパイル時には外せず、ランタイム選択で tiny-skia を既定にする。
