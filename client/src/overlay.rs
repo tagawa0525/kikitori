@@ -23,21 +23,24 @@ pub const MAX_ROWS: u32 = 9;
 
 /// 文字列の推定表示幅（px）。半角 0.5em / 全角 1em の見積もり。
 pub fn est_text_width(s: &str) -> u32 {
-    let _ = s;
-    todo!("GREEN コミットで実装")
+    s.chars()
+        .map(|c| if c.is_ascii() { HALF_WIDTH } else { TEXT_SIZE })
+        .sum()
 }
 
 /// 幅 `usable_px` の領域に折り返して表示したときの推定行数（最低 1）。
 pub fn est_rows(s: &str, usable_px: u32) -> u32 {
-    let _ = (s, usable_px);
-    todo!("GREEN コミットで実装")
+    if usable_px == 0 {
+        return 1;
+    }
+    est_text_width(s).div_ceil(usable_px).max(1)
 }
 
 /// 表示行数 `rows`（折り返し込み）を収める箱の高さ（px）。
 /// `MAX_ROWS` で頭打ちになる。
 pub fn bar_height(rows: u32) -> u32 {
-    let _ = rows;
-    todo!("GREEN コミットで実装")
+    let rows = rows.clamp(1, MAX_ROWS);
+    PADDING_V * 2 + rows * LINE_HEIGHT + (rows - 1) * SPACING
 }
 
 #[cfg(test)]
