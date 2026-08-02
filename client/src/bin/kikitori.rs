@@ -9,6 +9,8 @@
 
 use std::io::{BufReader, BufWriter, Write as _};
 use std::sync::mpsc;
+use std::sync::OnceLock;
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use iced::widget::{column, container, text};
@@ -24,12 +26,30 @@ use kikitori_proto::{self as proto, read_frame, write_frame};
 const TARGET_RATE: u32 = 16_000;
 const BAR_HEIGHT: u32 = 76;
 
+/// 計測基準点（main 先頭で初期化）。起動レイテンシの実測用（issue #11）。
+static T0: OnceLock<Instant> = OnceLock::new();
+
+/// 起動からの経過時間つきでログを出す。
+fn trace(label: &str) {
+    let t0 = *T0.get_or_init(Instant::now);
+    eprintln!("[overlay] +{:>4}ms {label}", t0.elapsed().as_millis());
+}
+
 fn ctl_path() -> String {
     let dir = std::env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR");
     format!("{dir}/kikitori-ctl.sock")
 }
 
 pub fn main() -> Result<(), iced_layershell::Error> {
+    T0.get_or_init(Instant::now);
+    // 数十文字のテキストを流すだけのバーに GPU は不要（issue #11）。
+    // iced_layershell が iced のデフォルト機能（wgpu）を要求するため
+    // コンパイル時には外せず、ランタイム選択で tiny-skia を既定にする。
+    // 実測: 初回描画 41ms（wgpu）→ 4ms（tiny-skia）。環境変数指定があれば尊重。
+    // スレッド起動前の set_var なので競合しない
+    if std::env::var_os("ICED_BACKEND").is_none() {
+        std::env::set_var("ICED_BACKEND", "tiny-skia");
+    }
     // 常駐しないスポーン型: 1 回目の起動が録音セッションそのもの。
     // 2 回目の起動は先行インスタンスに合図（=停止）して即終了する。
     // エンジンが常駐なので、クライアントを残しておく理由がない
@@ -37,6 +57,7 @@ pub fn main() -> Result<(), iced_layershell::Error> {
         return Ok(());
     }
     let _ = std::fs::remove_file(ctl_path()); // 異常終了の残骸
+    trace("GUI 初期化開始");
     application(App::default, namespace, update, view)
         .style(style)
         .subscription(subscription)
@@ -109,6 +130,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
 }
 
 fn view(app: &App) -> Element<'_, Message> {
+    static FIRST_VIEW: std::sync::Once = std::sync::Once::new();
+    FIRST_VIEW.call_once(|| trace("初回 view 呼び出し"));
     if !app.recording {
         // 待機中はバーを消す（背景も style 側で透明にする）
         return container(column![]).into();
@@ -151,6 +174,9 @@ fn subscription(_: &App) -> Subscription<Message> {
 }
 
 fn engine_stream() -> impl futures::Stream<Item = Message> {
+    // 注: iced_layershell は購読をレンダラ初期化と並行に起動するため、
+    // この時点でレンダラが出来ている保証はない（表示側は「初回 view」で測る）
+    trace("GUI 購読開始");
     iced::stream::channel(
         100,
         |sender: futures::channel::mpsc::Sender<Message>| async move {
@@ -164,6 +190,7 @@ fn engine_stream() -> impl futures::Stream<Item = Message> {
 
 /// マイク → デーモン → イベント（kikitori-cli と同じ経路の表示専用版）。
 fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
+    trace("パイプライン開始");
     let events = EventSender(sender);
     let status = |s: &str| events.send(EngineEvent::Status(s.into()));
     let endpoint = engine_endpoint({
@@ -211,6 +238,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         )
         .expect("入力ストリームを開けない");
     stream.play().expect("キャプチャ開始に失敗");
+    trace("キャプチャ開始（stream.play 完了）");
 
     let conn = match kikitori_proto::endpoint::Connection::connect(&endpoint) {
         Ok(c) => c,
@@ -224,6 +252,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     write_frame(&mut writer, proto::HELLO, br#"{"version":0}"#).unwrap();
     write_frame(&mut writer, proto::START, b"{}").unwrap();
     writer.flush().unwrap();
+    trace("エンジンへ START 送信");
     events.send(EngineEvent::Recording(true));
     status("録音中…");
 
