@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use iced::widget::{column, container, text};
+use iced::widget::{column, container, scrollable, text};
 use iced::{Color, Element, Length, Subscription, Task};
 use iced_layershell::application;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
@@ -23,11 +23,13 @@ use iced_layershell::to_layer_message;
 use kikitori_client::audio::{downmix, downsample, f32_to_s16le};
 use kikitori_client::ctl::{self, Claim};
 use kikitori_client::engine_endpoint;
+use kikitori_client::overlay;
 use kikitori_proto::{self as proto, read_frame, write_frame};
 
 const TARGET_RATE: u32 = 16_000;
-const BAR_HEIGHT: u32 = 76;
-/// 回復不能な失敗をバーに表示してから終了するまでの猶予（issue #6）。
+/// 表示領域（箱）の幅 = 画面幅 / BOX_WIDTH_DIV。
+const BOX_WIDTH_DIV: u32 = 4;
+/// 回復不能な失敗を箱に表示してから終了するまでの猶予（issue #6）。
 const FATAL_DISPLAY: Duration = Duration::from_secs(4);
 
 /// 計測基準点（main 先頭で初期化）。起動レイテンシの実測用（issue #11）。
@@ -62,10 +64,13 @@ impl Drop for CtlGuard {
 
 pub fn main() -> Result<(), iced_layershell::Error> {
     T0.get_or_init(Instant::now);
-    // 数十文字のテキストを流すだけのバーに GPU は不要（issue #11）。
+    // 数十文字のテキストを流すだけの箱に GPU は不要（issue #11）。
     // iced_layershell が iced のデフォルト機能（wgpu）を要求するため
     // コンパイル時には外せず、ランタイム選択で tiny-skia を既定にする。
     // 実測: 初回描画 41ms（wgpu）→ 4ms（tiny-skia）。環境変数指定があれば尊重。
+    // 制約: tiny-skia の表示経路（softbuffer）は Wayland で Xrgb8888
+    // （アルファなし）しか使えず、透明ピクセルは黒く塗られる。そのため
+    // サーフェスは表示領域（箱）と同寸にし、透明領域を持たない設計とする。
     // スレッド起動前の set_var なので競合しない
     if std::env::var_os("ICED_BACKEND").is_none() {
         std::env::set_var("ICED_BACKEND", "tiny-skia");
@@ -85,10 +90,15 @@ pub fn main() -> Result<(), iced_layershell::Error> {
         .subscription(subscription)
         .settings(Settings {
             layer_settings: LayerShellSettings {
-                size: Some((0, BAR_HEIGHT)),
-                anchor: Anchor::Bottom | Anchor::Left | Anchor::Right,
+                // 箱の幅（画面幅 / BOX_WIDTH_DIV）を決めるには画面幅が要るが、
+                // layer shell の幅 0（お任せ）は左右アンカーが必須。そこで
+                // まず全幅 1px の足場で起動し、Opened イベントが運んでくる
+                // configure 済みサイズから画面幅を学んで、update() で
+                // 箱サイズ + 中央アンカーへ切り替える
+                size: Some((0, 1)),
+                anchor: Anchor::Left | Anchor::Right,
                 layer: Layer::Overlay,
-                // バーを触れないようにし、入力先のフォーカスを奪わない
+                // 箱を触れないようにし、入力先のフォーカスを奪わない
                 keyboard_interactivity: KeyboardInteractivity::None,
                 events_transparent: true,
                 exclusive_zone: 0,
@@ -103,10 +113,15 @@ pub fn main() -> Result<(), iced_layershell::Error> {
 #[derive(Default)]
 struct App {
     status: String,
-    last_commit: String,
+    /// セッション中の確定済みテキスト。確定のたびに箱を伸ばして
+    /// 全行を見えるままにする（表示行数は overlay::MAX_ROWS で頭打ち）
+    commits: Vec<String>,
     partial: String,
-    recording: bool,
-    /// 回復不能な失敗。録音状態と無関係にバーへ表示する（issue #6）
+    /// Opened イベント（足場サーフェスの configure）で学んだ画面幅
+    screen_width: Option<u32>,
+    /// 最後に発行した箱の高さ。同じ高さの SizeChange を連発しないため
+    last_height: u32,
+    /// 回復不能な失敗。箱に表示する（issue #6）
     error: Option<String>,
 }
 
@@ -114,6 +129,8 @@ struct App {
 #[derive(Debug, Clone)]
 enum Message {
     Engine(EngineEvent),
+    /// サーフェスの Opened / Resized が運んでくる幅（画面幅の学習用）
+    SurfaceWidth(u32),
 }
 
 #[derive(Debug, Clone)]
@@ -121,7 +138,6 @@ enum EngineEvent {
     Status(String),
     Partial(String),
     Commit(String),
-    Recording(bool),
     Fatal(String),
 }
 
@@ -139,46 +155,106 @@ fn namespace() -> String {
     "kikitori".into()
 }
 
+/// いま表示している内容の推定表示行数（折り返し込み。view と対で保つ）。
+fn visible_rows(app: &App, usable_px: u32) -> u32 {
+    if let Some(err) = &app.error {
+        return overlay::est_rows(err, usable_px);
+    }
+    let current = if app.partial.is_empty() && app.commits.is_empty() {
+        &app.status
+    } else {
+        &app.partial
+    };
+    let commits: u32 = app
+        .commits
+        .iter()
+        .map(|c| overlay::est_rows(c, usable_px))
+        .sum();
+    commits + overlay::est_rows(current, usable_px)
+}
+
+/// 表示内容から箱の高さを見積もり、変わっていれば SizeChange を発行する。
+/// 部分認識の折り返しにも追従する（高さが同じ間は何もしない）。
+fn resize_to_fit(app: &mut App) -> Task<Message> {
+    let Some(w) = app.screen_width else {
+        return Task::none();
+    };
+    let width = w / BOX_WIDTH_DIV;
+    let height = overlay::bar_height(visible_rows(app, width - 2 * overlay::PADDING_H));
+    if app.last_height == height {
+        return Task::none();
+    }
+    app.last_height = height;
+    Task::done(Message::SizeChange((width, height)))
+}
+
 fn update(app: &mut App, message: Message) -> Task<Message> {
-    if let Message::Engine(event) = message {
-        match event {
-            EngineEvent::Status(s) => app.status = s,
-            EngineEvent::Partial(t) => app.partial = t,
-            EngineEvent::Commit(t) => {
-                app.last_commit = t;
-                app.partial.clear();
+    match message {
+        Message::Engine(event) => {
+            match event {
+                EngineEvent::Status(s) => app.status = s,
+                EngineEvent::Partial(t) => app.partial = t,
+                EngineEvent::Commit(t) => {
+                    app.commits.push(t);
+                    app.partial.clear();
+                }
+                EngineEvent::Fatal(msg) => app.error = Some(msg),
             }
-            EngineEvent::Recording(b) => app.recording = b,
-            EngineEvent::Fatal(msg) => app.error = Some(msg),
+            return resize_to_fit(app);
         }
+        // 足場（全幅 1px）の configure 済みサイズ = 画面幅。一度学んだら
+        // 箱サイズ + 中央アンカー（アンカーなし = 両軸センタリング）へ
+        // 切り替え、以降のサイズ通知（自分の箱の幅）は無視する
+        Message::SurfaceWidth(w) if app.screen_width.is_none() && w > 1 => {
+            trace(&format!("画面幅 {w}px を取得 → 中央の箱へ切り替え"));
+            app.screen_width = Some(w);
+            let width = w / BOX_WIDTH_DIV;
+            let height = overlay::bar_height(visible_rows(app, width - 2 * overlay::PADDING_H));
+            app.last_height = height;
+            return Task::done(Message::AnchorSizeChange(Anchor::empty(), (width, height)));
+        }
+        _ => {}
     }
     Task::none()
+}
+
+/// 表示領域の箱。サーフェス自体が箱と同寸（透明領域なし）なので、
+/// 背景は style() でサーフェス全体に塗る。中の文字は左寄せ。
+/// 中身が箱より高くなったら（確定行の折り返し等）、古い行から上へ隠し、
+/// 入力中の最下行は常に見せる。container は子を自身の高さにクランプする
+/// ため下端揃えでは実現できず、末尾アンカーの scrollable（バー非表示・
+/// サーフェス自体が非対話）を使う。
+fn bar(content: Element<'_, Message>) -> Element<'_, Message> {
+    container(
+        scrollable(content)
+            .direction(scrollable::Direction::Vertical(
+                scrollable::Scrollbar::hidden(),
+            ))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .anchor_bottom(),
+    )
+    .padding([overlay::PADDING_V as f32, 16.0])
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 fn view(app: &App) -> Element<'_, Message> {
     static FIRST_VIEW: std::sync::Once = std::sync::Once::new();
     FIRST_VIEW.call_once(|| trace("初回 view 呼び出し"));
-    // 回復不能な失敗は録音状態と無関係に表示する（issue #6: 無言で
+    // 回復不能な失敗は他の状態と無関係に表示する（issue #6: 無言で
     // 消えると「ホットキーを押しても何も起きない」ように見える）
     if let Some(err) = &app.error {
-        return container(
-            text(err.to_owned())
-                .size(20)
-                .color(Color::from_rgb(1.0, 0.55, 0.5))
-                .width(Length::Fill),
-        )
-        .padding([8, 16])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into();
-    }
-    if !app.recording {
-        // 待機中はバーを消す（背景も style 側で透明にする）
-        return container(column![]).into();
+        return bar(text(err.to_owned())
+            .size(overlay::TEXT_SIZE as f32)
+            .color(Color::from_rgb(1.0, 0.55, 0.5))
+            .width(Length::Fill)
+            .into());
     }
     let line = |t: &str, dim: bool| {
         text(t.to_owned())
-            .size(20)
+            .size(overlay::TEXT_SIZE as f32)
             .color(if dim {
                 Color::from_rgb(0.6, 0.6, 0.6)
             } else {
@@ -186,31 +262,49 @@ fn view(app: &App) -> Element<'_, Message> {
             })
             .width(Length::Fill)
     };
-    let shown = if app.partial.is_empty() && app.last_commit.is_empty() {
+    let shown = if app.partial.is_empty() && app.commits.is_empty() {
         line(&app.status, true)
     } else {
         line(&app.partial, false)
     };
-    container(column![line(&app.last_commit, true), shown].spacing(4))
-        .padding([8, 16])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    // 確定行は全て並べる。表示行数の上限（overlay::MAX_ROWS）を超えた分は
+    // scrollable の末尾アンカーで古い行から隠れる。レイアウト対象は
+    // 箱を埋めるのに足る末尾分だけに絞る（1 確定 ≥ 1 行なので十分）
+    let start = app.commits.len().saturating_sub(overlay::MAX_ROWS as usize);
+    let mut col = column![].spacing(overlay::SPACING as f32);
+    for commit in &app.commits[start..] {
+        col = col.push(line(commit, true));
+    }
+    bar(col.push(shown).into())
 }
 
-fn style(app: &App, _theme: &iced::Theme) -> iced::theme::Style {
+fn style(_: &App, _theme: &iced::Theme) -> iced::theme::Style {
+    // サーフェス = 箱なので全面に背景を塗る（tiny-skia はアルファなしの
+    // ため不透明になる。wgpu を明示指定した場合のみ半透明）
     iced::theme::Style {
-        background_color: if app.recording || app.error.is_some() {
-            Color::from_rgba(0.08, 0.08, 0.10, 0.85)
-        } else {
-            Color::TRANSPARENT
-        },
+        background_color: Color::from_rgba(0.08, 0.08, 0.10, 0.85),
         text_color: Color::WHITE,
     }
 }
 
 fn subscription(_: &App) -> Subscription<Message> {
-    Subscription::run(engine_stream)
+    Subscription::batch([
+        Subscription::run(engine_stream),
+        // Opened は multi_window の登録時に configure 済みサイズ付きで
+        // 発火する（Resized は登録後の変化時のみ = 初回は来ない）。
+        // 保険で Resized も同じ経路に流す
+        iced::window::events().map(|(_, event)| match event {
+            iced::window::Event::Opened { size, .. } => {
+                trace(&format!("Opened {}x{}", size.width, size.height));
+                Message::SurfaceWidth(size.width as u32)
+            }
+            iced::window::Event::Resized(size) => {
+                trace(&format!("Resized {}x{}", size.width, size.height));
+                Message::SurfaceWidth(size.width as u32)
+            }
+            _ => Message::SurfaceWidth(0), // 学習ガードで無視される
+        }),
+    ])
 }
 
 fn engine_stream() -> impl futures::Stream<Item = Message> {
@@ -311,7 +405,6 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         return fatal(ctl, format!("エンジンへ送信できない: {e}"));
     }
     trace("エンジンへ START 送信");
-    events.send(EngineEvent::Recording(true));
     status("録音中…");
 
     // 受信スレッド
@@ -357,9 +450,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         });
     }
 
-    // 表示を録音状態にし、次の起動（= 停止指示）を制御ソケットで待つ
-    events.send(EngineEvent::Recording(true));
-    status("録音中…");
+    // 次の起動（= 停止指示）を制御ソケットで待つ
     let (ctl_tx, ctl_rx) = mpsc::channel::<()>();
     // main の bind から accept までの間に届いた停止指示もバックログに
     // 積まれているので、ここで拾える
@@ -377,7 +468,6 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     // 送信ループ: 停止指示が来るまで AUDIO を流し続ける
     loop {
         if ctl_rx.try_recv().is_ok() {
-            events.send(EngineEvent::Recording(false));
             let _ = std::fs::remove_file(ctl_path());
             if write_frame(&mut writer, proto::STOP, b"{}").is_err() {
                 return;
