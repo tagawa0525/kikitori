@@ -184,8 +184,8 @@
         }:
         let
           cfg = config.services.kikitori;
-          pkg = self.packages.${pkgs.system}.kikitori;
-          setup = self.packages.${pkgs.system}.kikitori-setup;
+          pkg = self.packages.${pkgs.stdenv.hostPlatform.system}.kikitori;
+          setup = self.packages.${pkgs.stdenv.hostPlatform.system}.kikitori-setup;
           dataDir = "%h/.local/share/kikitori";
         in
         {
