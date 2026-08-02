@@ -24,6 +24,7 @@ use kikitori_client::audio::{downmix, downsample, f32_to_s16le};
 use kikitori_client::ctl::{self, Claim};
 use kikitori_client::engine_endpoint;
 use kikitori_client::overlay;
+use kikitori_client::session::Session;
 use kikitori_proto::{self as proto, read_frame, write_frame};
 
 const TARGET_RATE: u32 = 16_000;
@@ -113,9 +114,10 @@ pub fn main() -> Result<(), iced_layershell::Error> {
 #[derive(Default)]
 struct App {
     status: String,
-    /// セッション中の確定済みテキスト。確定のたびに箱を伸ばして
-    /// 全行を見えるままにする（表示行数は overlay::MAX_ROWS で頭打ち）
-    commits: Vec<String>,
+    /// セッション中の確定済みテキストの唯一の蓄積。表示（末尾
+    /// overlay::MAX_ROWS 件）と停止時の wtype 入力（全文連結）の両方を
+    /// ここから導出し、見えていた確定と入力される文字列の食い違いを防ぐ
+    session: Session,
     partial: String,
     /// Opened イベント（足場サーフェスの configure）で学んだ画面幅
     screen_width: Option<u32>,
@@ -138,6 +140,8 @@ enum EngineEvent {
     Status(String),
     Partial(String),
     Commit(String),
+    /// STOPPED 受信。確定全文の wtype 入力と終了は update() が行う
+    Stopped,
     Fatal(String),
 }
 
@@ -147,7 +151,11 @@ struct EventSender(futures::channel::mpsc::Sender<Message>);
 
 impl EventSender {
     fn send(&self, event: EngineEvent) {
-        let _ = self.0.clone().try_send(Message::Engine(event));
+        // COMMIT を取りこぼすと表示と入力が食い違うため、バッファ満杯時は
+        // ブロックして必ず届ける（送り手は専用スレッドなので待ってよい）
+        let mut tx = self.0.clone();
+        let _ =
+            futures::executor::block_on(futures::SinkExt::send(&mut tx, Message::Engine(event)));
     }
 }
 
@@ -160,13 +168,14 @@ fn visible_rows(app: &App, usable_px: u32) -> u32 {
     if let Some(err) = &app.error {
         return overlay::est_rows(err, usable_px);
     }
-    let current = if app.partial.is_empty() && app.commits.is_empty() {
+    let current = if app.partial.is_empty() && app.session.is_empty() {
         &app.status
     } else {
         &app.partial
     };
     let commits: u32 = app
-        .commits
+        .session
+        .tail(overlay::MAX_ROWS as usize)
         .iter()
         .map(|c| overlay::est_rows(c, usable_px))
         .sum();
@@ -196,12 +205,20 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 EngineEvent::Status(s) => app.status = s,
                 EngineEvent::Partial(t) => app.partial = t,
                 EngineEvent::Commit(t) => {
-                    app.commits.push(t);
+                    app.session.push(t);
                     app.partial.clear();
-                    // 表示は MAX_ROWS で頭打ちなので保持もその分だけでよい
-                    // （wtype 用の全文はパイプライン側の session が持つ）
-                    let excess = app.commits.len().saturating_sub(overlay::MAX_ROWS as usize);
-                    app.commits.drain(..excess);
+                }
+                EngineEvent::Stopped => {
+                    // 停止確定: 表示に使ってきた蓄積そのものを全文入力する
+                    let text = app.session.text();
+                    if !text.is_empty() {
+                        let st = std::process::Command::new("wtype").arg(&text).status();
+                        let ok = st.map(|s| s.success()).unwrap_or(false);
+                        if !ok {
+                            eprintln!("[overlay] wtype 失敗");
+                        }
+                    }
+                    std::process::exit(0);
                 }
                 EngineEvent::Fatal(msg) => app.error = Some(msg),
             }
@@ -268,17 +285,16 @@ fn view(app: &App) -> Element<'_, Message> {
             })
             .width(Length::Fill)
     };
-    let shown = if app.partial.is_empty() && app.commits.is_empty() {
+    let shown = if app.partial.is_empty() && app.session.is_empty() {
         line(&app.status, true)
     } else {
         line(&app.partial, false)
     };
-    // 確定行は全て並べる。表示行数の上限（overlay::MAX_ROWS）を超えた分は
-    // scrollable の末尾アンカーで古い行から隠れる。レイアウト対象は
+    // 確定行は末尾から並べる。表示行数の上限（overlay::MAX_ROWS）を超えた
+    // 分は scrollable の末尾アンカーで古い行から隠れる。レイアウト対象は
     // 箱を埋めるのに足る末尾分だけに絞る（1 確定 ≥ 1 行なので十分）
-    let start = app.commits.len().saturating_sub(overlay::MAX_ROWS as usize);
     let mut col = column![].spacing(overlay::SPACING as f32);
-    for commit in &app.commits[start..] {
+    for commit in app.session.tail(overlay::MAX_ROWS as usize) {
         col = col.push(line(commit, true));
     }
     bar(col.push(shown).into())
@@ -413,10 +429,11 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     trace("エンジンへ START 送信");
     status("録音中…");
 
-    // 受信スレッド
+    // 受信スレッド。確定テキストはここでは溜めず、すべて GUI 側の
+    // Session に一本化する（表示と入力の食い違いを防ぐ。issue の
+    // 「確定文字列と貼り付け文字列の差分」対策）
     {
         let events = events.clone();
-        let mut session: Vec<String> = Vec::new();
         std::thread::spawn(move || loop {
             let Ok(frame) = read_frame(&mut reader) else {
                 // 切断 = 蹴られた（別クライアントが開始した）かエンジン停止。
@@ -434,22 +451,12 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
             match frame.kind {
                 proto::READY => {} // 状態表示は START 時の「録音中…」のみ
                 proto::PARTIAL => events.send(EngineEvent::Partial(get(&frame.payload))),
-                proto::COMMIT => {
-                    let t = get(&frame.payload);
-                    session.push(t.clone());
-                    events.send(EngineEvent::Commit(t));
-                }
+                proto::COMMIT => events.send(EngineEvent::Commit(get(&frame.payload))),
                 proto::STOPPED => {
-                    // 停止確定: このセッションの全文を wtype で入力
-                    let text: String = session.drain(..).collect();
-                    if !text.is_empty() {
-                        let st = std::process::Command::new("wtype").arg(&text).status();
-                        let ok = st.map(|s| s.success()).unwrap_or(false);
-                        if !ok {
-                            eprintln!("[overlay] wtype 失敗");
-                        }
-                    }
-                    std::process::exit(0);
+                    // 入力と終了は update() が行う。ここで受信をやめ、
+                    // その後の切断を exit(1) と誤認しないようにする
+                    events.send(EngineEvent::Stopped);
+                    return;
                 }
                 _ => {}
             }
@@ -479,7 +486,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
                 return;
             }
             let _ = writer.flush();
-            // 以降は送らない。STOPPED 受信側が wtype して exit する
+            // 以降は送らない。STOPPED を受けた update() が wtype して exit する
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
