@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod ctl;
 
 /// エンジン接続先の解決: CLI 引数 → KIKITORI_ENGINE → 既定の Unix ソケット。
 /// 2 つのクライアント（kikitori / kikitori-cli）で共通。
