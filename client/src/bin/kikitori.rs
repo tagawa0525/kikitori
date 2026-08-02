@@ -8,8 +8,9 @@
 //! （制御ソケット接続）。停止時は確定テキストを wtype で入力して終了する。
 
 use std::io::{BufReader, BufWriter, Write as _};
+use std::os::unix::net::UnixListener;
 use std::sync::mpsc;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -20,6 +21,7 @@ use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
 use kikitori_client::audio::{downmix, downsample, f32_to_s16le};
+use kikitori_client::ctl::{self, Claim};
 use kikitori_client::engine_endpoint;
 use kikitori_proto::{self as proto, read_frame, write_frame};
 
@@ -40,6 +42,22 @@ fn ctl_path() -> String {
     format!("{dir}/kikitori-ctl.sock")
 }
 
+/// main で bind 済みの制御ソケット。パイプラインスレッドが受け取って
+/// 停止指示（次の起動からの接続）を待つ。
+static CTL_LISTENER: Mutex<Option<UnixListener>> = Mutex::new(None);
+
+/// エンジンに到達する前の早期 return / panic で制御ソケットの残骸を
+/// 残さないためのガード。listener を取り出さずに drop されたら片付ける。
+struct CtlGuard(Option<UnixListener>);
+
+impl Drop for CtlGuard {
+    fn drop(&mut self) {
+        if self.0.take().is_some() {
+            let _ = std::fs::remove_file(ctl_path());
+        }
+    }
+}
+
 pub fn main() -> Result<(), iced_layershell::Error> {
     T0.get_or_init(Instant::now);
     // 数十文字のテキストを流すだけのバーに GPU は不要（issue #11）。
@@ -52,11 +70,13 @@ pub fn main() -> Result<(), iced_layershell::Error> {
     }
     // 常駐しないスポーン型: 1 回目の起動が録音セッションそのもの。
     // 2 回目の起動は先行インスタンスに合図（=停止）して即終了する。
-    // エンジンが常駐なので、クライアントを残しておく理由がない
-    if std::os::unix::net::UnixStream::connect(ctl_path()).is_ok() {
-        return Ok(());
+    // エンジンが常駐なので、クライアントを残しておく理由がない。
+    // bind の成否そのものが役割判定（issue #7）: 判定と占有を単一操作に
+    // することで、連打時に二重セッションが立つ窓を消す
+    match ctl::claim(&ctl_path()).expect("制御ソケットを確保できない") {
+        Claim::Stopped => return Ok(()),
+        Claim::Recorder(listener) => *CTL_LISTENER.lock().unwrap() = Some(listener),
     }
-    let _ = std::fs::remove_file(ctl_path()); // 異常終了の残骸
     trace("GUI 初期化開始");
     application(App::default, namespace, update, view)
         .style(style)
@@ -191,6 +211,9 @@ fn engine_stream() -> impl futures::Stream<Item = Message> {
 /// マイク → デーモン → イベント（kikitori-cli と同じ経路の表示専用版）。
 fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     trace("パイプライン開始");
+    // 制御ソケットは main で bind 済み。エンジンに到達できず早期 return
+    // する場合はガードが破棄し、次回起動が録音役になれるようにする
+    let mut ctl = CtlGuard(CTL_LISTENER.lock().unwrap().take());
     let events = EventSender(sender);
     let status = |s: &str| events.send(EngineEvent::Status(s.into()));
     let endpoint = engine_endpoint({
@@ -303,9 +326,13 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
     events.send(EngineEvent::Recording(true));
     status("録音中…");
     let (ctl_tx, ctl_rx) = mpsc::channel::<()>();
+    // main の bind から accept までの間に届いた停止指示もバックログに
+    // 積まれているので、ここで拾える
+    let listener = ctl
+        .0
+        .take()
+        .expect("制御ソケットは main で bind 済みのはず");
     std::thread::spawn(move || {
-        let listener = std::os::unix::net::UnixListener::bind(ctl_path())
-            .expect("制御ソケットに bind できない");
         if let Ok((conn, _)) = listener.accept() {
             drop(conn); // 接続 = 停止指示
             let _ = ctl_tx.send(());
