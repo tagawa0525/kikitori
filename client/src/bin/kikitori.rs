@@ -295,7 +295,11 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
 
     let conn = match kikitori_proto::endpoint::Connection::connect(&endpoint) {
         Ok(c) => c,
-        Err(e) => return fatal(ctl, format!("エンジン {endpoint:?} に接続できない: {e}")),
+        Err(e) => {
+            // エラー表示の猶予中はキャプチャ不要（キューに溜まるだけ）
+            drop(stream);
+            return fatal(ctl, format!("エンジン {endpoint:?} に接続できない: {e}"));
+        }
     };
     let mut writer = BufWriter::new(conn.writer);
     let mut reader = BufReader::new(conn.reader);
@@ -303,6 +307,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         .and_then(|()| write_frame(&mut writer, proto::START, b"{}"))
         .and_then(|()| writer.flush());
     if let Err(e) = sent {
+        drop(stream);
         return fatal(ctl, format!("エンジンへ送信できない: {e}"));
     }
     trace("エンジンへ START 送信");
