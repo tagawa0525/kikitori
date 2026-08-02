@@ -6,7 +6,7 @@
 //! bind の成否そのものを役割判定にする。
 
 use std::io;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 
 /// 役割判定の結果。
 pub enum Claim {
@@ -22,8 +22,22 @@ pub enum Claim {
 /// - `AddrInUse` → connect を試み、成功すれば停止指示として `Stopped`
 /// - connect も失敗 → 異常終了の残骸と判断して削除し、再 bind
 pub fn claim(path: &str) -> io::Result<Claim> {
-    let _ = path;
-    todo!("GREEN コミットで実装")
+    // 1 周目: 通常時。2 周目: 残骸を削除した直後に別プロセスが bind した
+    // 稀な競合への再試行。それでも AddrInUse なら相手は生きているとみなす
+    for _ in 0..2 {
+        match UnixListener::bind(path) {
+            Ok(listener) => return Ok(Claim::Recorder(listener)),
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+                if UnixStream::connect(path).is_ok() {
+                    return Ok(Claim::Stopped);
+                }
+                // listener 不在のソケットファイル = 異常終了の残骸
+                let _ = std::fs::remove_file(path);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    UnixListener::bind(path).map(Claim::Recorder)
 }
 
 #[cfg(test)]
