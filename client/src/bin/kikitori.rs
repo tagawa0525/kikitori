@@ -42,6 +42,14 @@ fn ctl_path() -> String {
 
 pub fn main() -> Result<(), iced_layershell::Error> {
     T0.set(Instant::now()).unwrap();
+    // 数十文字のテキストを流すだけのバーに GPU は不要（issue #11）。
+    // iced_layershell が iced のデフォルト機能（wgpu）を要求するため
+    // コンパイル時には外せず、ランタイム選択で tiny-skia を既定にする。
+    // 実測: 初回描画 41ms（wgpu）→ 4ms（tiny-skia）。環境変数指定があれば尊重。
+    // スレッド起動前の set_var なので競合しない
+    if std::env::var_os("ICED_BACKEND").is_none() {
+        std::env::set_var("ICED_BACKEND", "tiny-skia");
+    }
     // 常駐しないスポーン型: 1 回目の起動が録音セッションそのもの。
     // 2 回目の起動は先行インスタンスに合図（=停止）して即終了する。
     // エンジンが常駐なので、クライアントを残しておく理由がない
