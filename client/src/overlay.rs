@@ -18,8 +18,8 @@ pub const MAX_COMMIT_ROWS: usize = 8;
 /// 確定 `commits` 行 + 現在行（部分認識/状態表示）を収めるバーの高さ（px）。
 /// 確定行は `MAX_COMMIT_ROWS` で頭打ちになる。
 pub fn bar_height(commits: usize) -> u32 {
-    let _ = commits;
-    todo!("GREEN コミットで実装")
+    let rows = commits.min(MAX_COMMIT_ROWS) as u32 + 1;
+    PADDING_V * 2 + rows * LINE_HEIGHT + (rows - 1) * SPACING
 }
 
 #[cfg(test)]
