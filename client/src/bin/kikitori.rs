@@ -180,7 +180,8 @@ fn resize_to_fit(app: &mut App) -> Task<Message> {
         return Task::none();
     };
     let width = w / BOX_WIDTH_DIV;
-    let height = overlay::bar_height(visible_rows(app, width - 2 * overlay::PADDING_H));
+    let usable = width.saturating_sub(2 * overlay::PADDING_H).max(1);
+    let height = overlay::bar_height(visible_rows(app, usable));
     if app.last_height == height {
         return Task::none();
     }
@@ -197,6 +198,10 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
                 EngineEvent::Commit(t) => {
                     app.commits.push(t);
                     app.partial.clear();
+                    // 表示は MAX_ROWS で頭打ちなので保持もその分だけでよい
+                    // （wtype 用の全文はパイプライン側の session が持つ）
+                    let excess = app.commits.len().saturating_sub(overlay::MAX_ROWS as usize);
+                    app.commits.drain(..excess);
                 }
                 EngineEvent::Fatal(msg) => app.error = Some(msg),
             }
@@ -209,7 +214,8 @@ fn update(app: &mut App, message: Message) -> Task<Message> {
             trace(&format!("画面幅 {w}px を取得 → 中央の箱へ切り替え"));
             app.screen_width = Some(w);
             let width = w / BOX_WIDTH_DIV;
-            let height = overlay::bar_height(visible_rows(app, width - 2 * overlay::PADDING_H));
+            let usable = width.saturating_sub(2 * overlay::PADDING_H).max(1);
+            let height = overlay::bar_height(visible_rows(app, usable));
             app.last_height = height;
             return Task::done(Message::AnchorSizeChange(Anchor::empty(), (width, height)));
         }
@@ -234,7 +240,7 @@ fn bar(content: Element<'_, Message>) -> Element<'_, Message> {
             .height(Length::Fill)
             .anchor_bottom(),
     )
-    .padding([overlay::PADDING_V as f32, 16.0])
+    .padding([overlay::PADDING_V as f32, overlay::PADDING_H as f32])
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
