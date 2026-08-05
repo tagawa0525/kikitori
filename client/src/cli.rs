@@ -135,4 +135,18 @@ mod tests {
             Ok(Command::Version)
         );
     }
+
+    #[test]
+    fn query_flag_wins_from_a_value_position() {
+        // 値を書き忘れた `--socket --version` でも照会として扱う。
+        // 値として飲み込むと、不正な接続先のまま録音が始まってしまう
+        assert_eq!(parse_gui(&["--socket", "--version"]), Ok(Command::Version));
+        assert_eq!(parse_gui(&["--socket", "--help"]), Ok(Command::Help));
+    }
+
+    #[test]
+    fn socket_does_not_swallow_the_next_flag() {
+        // `--socket --wtype` は値の書き忘れ。旗をパスとして受け取らない
+        assert!(parse_cli(&["--socket", "--wtype"]).is_err());
+    }
 }
