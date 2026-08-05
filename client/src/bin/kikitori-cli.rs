@@ -14,23 +14,40 @@ use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use kikitori_client::audio::{downmix, downsample, f32_to_s16le};
+use kikitori_client::cli::{self, Command};
 use kikitori_client::engine_endpoint;
 use kikitori_proto::{self as proto, read_frame, write_frame};
 
 const TARGET_RATE: u32 = 16_000;
+const USAGE: &str = "\
+使い方: kikitori-cli [--socket PATH] [--wtype]
+
+  --socket PATH  エンジンの接続先（既定: $XDG_RUNTIME_DIR/kikitori.sock）
+  --wtype        確定テキストを wtype で入力する
+  --version      バージョンを表示して終了
+  --help         この使い方を表示して終了
+
+Ctrl+C で停止し、確定テキストを表示する。";
 
 fn main() {
-    let mut socket = None;
-    let mut use_wtype = false;
-    let mut it = std::env::args().skip(1);
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--socket" => socket = Some(it.next().expect("--socket の値")),
-            "--wtype" => use_wtype = true,
-            _ => panic!("未知の引数: {arg}"),
+    // 引数は録音を始める前に捌く（GUI 版と共有。cli モジュールの説明を参照）
+    let options = match cli::parse(std::env::args().skip(1), true) {
+        Ok(Command::Run(o)) => o,
+        Ok(Command::Version) => {
+            println!("kikitori-cli {}", env!("CARGO_PKG_VERSION"));
+            return;
         }
-    }
-    let endpoint = engine_endpoint(socket);
+        Ok(Command::Help) => {
+            println!("{USAGE}");
+            return;
+        }
+        Err(msg) => {
+            eprintln!("{msg}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    let use_wtype = options.wtype;
+    let endpoint = engine_endpoint(options.socket);
 
     // ---- キャプチャを先に開始（モデルやソケットより前） ----
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();

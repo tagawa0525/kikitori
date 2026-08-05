@@ -30,11 +30,29 @@ pub struct Options {
 ///
 /// `accept_wtype` が false の実行ファイルでは `--wtype` も未知の引数として
 /// 拒否する。受け付けない旗を黙って無視すると、利用者は効いたと誤解する。
-pub fn parse<I>(_args: I, _accept_wtype: bool) -> Result<Command, String>
+pub fn parse<I>(args: I, accept_wtype: bool) -> Result<Command, String>
 where
     I: IntoIterator<Item = String>,
 {
-    todo!("引数解析を実装する")
+    let mut options = Options::default();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            // 照会は他の引数より先に効かせる。`--socket X --version` で
+            // 接続先を解決しに行っても意味がない
+            "--version" => return Ok(Command::Version),
+            "--help" => return Ok(Command::Help),
+            "--socket" => {
+                options.socket = Some(
+                    args.next()
+                        .ok_or_else(|| "--socket にはパスが必要".to_owned())?,
+                )
+            }
+            "--wtype" if accept_wtype => options.wtype = true,
+            _ => return Err(format!("未知の引数: {arg}")),
+        }
+    }
+    Ok(Command::Run(options))
 }
 
 #[cfg(test)]
