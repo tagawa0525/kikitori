@@ -21,6 +21,7 @@ use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
 use kikitori_client::audio::{downmix, downsample, f32_to_s16le};
+use kikitori_client::cli::{self, Command};
 use kikitori_client::ctl::{self, Claim};
 use kikitori_client::engine_endpoint;
 use kikitori_client::overlay;
@@ -28,6 +29,14 @@ use kikitori_client::session::Session;
 use kikitori_proto::{self as proto, read_frame, write_frame};
 
 const TARGET_RATE: u32 = 16_000;
+const USAGE: &str = "\
+使い方: kikitori [--socket PATH]
+
+  --socket PATH  エンジンの接続先（既定: $XDG_RUNTIME_DIR/kikitori.sock）
+  --version      バージョンを表示して終了
+  --help         この使い方を表示して終了
+
+1 回目の起動が録音セッション、2 回目の起動が停止指示になる。";
 /// 表示領域（箱）の幅 = 画面幅 / BOX_WIDTH_DIV。
 const BOX_WIDTH_DIV: u32 = 4;
 /// 回復不能な失敗を箱に表示してから終了するまでの猶予（issue #6）。
@@ -51,6 +60,9 @@ fn ctl_path() -> String {
 /// 停止指示（次の起動からの接続）を待つ。
 static CTL_LISTENER: Mutex<Option<UnixListener>> = Mutex::new(None);
 
+/// main で解析した設定。パイプラインスレッドが接続先の解決に使う。
+static OPTIONS: OnceLock<cli::Options> = OnceLock::new();
+
 /// エンジンに到達する前の早期 return / panic で制御ソケットの残骸を
 /// 残さないためのガード。listener を取り出さずに drop されたら片付ける。
 struct CtlGuard(Option<UnixListener>);
@@ -65,6 +77,24 @@ impl Drop for CtlGuard {
 
 pub fn main() -> Result<(), iced_layershell::Error> {
     T0.get_or_init(Instant::now);
+    // 引数は録音を始める前に捌く。--version のような照会が制御ソケットを
+    // 掴んで GUI のイベントループに入ると、終わらないプロセスになる
+    let options = match cli::parse(std::env::args().skip(1), false) {
+        Ok(Command::Run(o)) => o,
+        Ok(Command::Version) => {
+            println!("kikitori {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Ok(Command::Help) => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Err(msg) => {
+            eprintln!("{msg}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    OPTIONS.set(options).expect("設定は main でのみ入れる");
     // 数十文字のテキストを流すだけの箱に GPU は不要（issue #11）。
     // iced_layershell が iced のデフォルト機能（wgpu）を要求するため
     // コンパイル時には外せず、ランタイム選択で tiny-skia を既定にする。
@@ -361,16 +391,7 @@ fn run_pipeline(sender: futures::channel::mpsc::Sender<Message>) {
         std::thread::sleep(FATAL_DISPLAY);
         std::process::exit(1);
     };
-    let endpoint = engine_endpoint({
-        let mut args = std::env::args().skip(1);
-        let mut path = None;
-        while let Some(a) = args.next() {
-            if a == "--socket" {
-                path = args.next();
-            }
-        }
-        path
-    });
+    let endpoint = engine_endpoint(OPTIONS.get().and_then(|o| o.socket.clone()));
 
     // キャプチャを先に開始（HANDOFF §4 の教訓）
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();

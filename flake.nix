@@ -141,6 +141,11 @@
                     pkgs.libGL
                   ]
                 }
+              # `--version` が録音セッションを始めずに終わることを実証する。
+              # 引数解析より先に GUI 初期化へ進む退行が入ると、ここが
+              # timeout で落ちる（かつて 3 日 17 時間居座った事故の再発防止。
+              # 単体テストは解析関数しか見られず、main の順序を守れない）
+              timeout 60 $out/bin/kikitori --version
             '';
             meta.mainProgram = "kikitori";
           };
