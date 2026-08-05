@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod cli;
 pub mod ctl;
 pub mod overlay;
 pub mod session;
