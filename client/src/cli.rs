@@ -34,19 +34,27 @@ pub fn parse<I>(args: I, accept_wtype: bool) -> Result<Command, String>
 where
     I: IntoIterator<Item = String>,
 {
+    // 照会は引数列のどこにあっても最優先で効かせる。走査しながら判定すると
+    // `--socket --version` で --version が値として消費され、不正な接続先の
+    // まま録音が始まってしまう
+    let args: Vec<String> = args.into_iter().collect();
+    if args.iter().any(|a| a == "--version") {
+        return Ok(Command::Version);
+    }
+    if args.iter().any(|a| a == "--help") {
+        return Ok(Command::Help);
+    }
     let mut options = Options::default();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            // 照会は他の引数より先に効かせる。`--socket X --version` で
-            // 接続先を解決しに行っても意味がない
-            "--version" => return Ok(Command::Version),
-            "--help" => return Ok(Command::Help),
             "--socket" => {
-                options.socket = Some(
-                    args.next()
-                        .ok_or_else(|| "--socket にはパスが必要".to_owned())?,
-                )
+                // 次が旗なら値の書き忘れ。旗をパスとして飲み込むと、
+                // 誤った接続先のまま録音が始まる
+                options.socket = match args.next() {
+                    Some(value) if !value.starts_with("--") => Some(value),
+                    _ => return Err("--socket にはパスが必要".to_owned()),
+                }
             }
             "--wtype" if accept_wtype => options.wtype = true,
             _ => return Err(format!("未知の引数: {arg}")),
