@@ -56,19 +56,27 @@ nixfiles が overlay を足していたのは、この `package` オプション
 COSMIC のカスタムショートカットは宣言的に置ける。反映にログアウトは要らない。
 
 ```nix
-xdg.configFile."cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom".text = ''
-  {
-      (modifiers: [Super], key: "v"): Spawn("${kikitoriCommand}"),
-  }
-'';
+{ config, lib, ... }:
+let
+  # エンジンが別ホストなら `--socket host:port` を足す（下記）
+  kikitoriCommand = "${lib.getExe config.services.kikitori.package} --socket r995:41717";
+in
+{
+  xdg.configFile."cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom".text = ''
+    {
+        (modifiers: [Super], key: "v"): Spawn("${kikitoriCommand}"),
+    }
+  '';
+}
 ```
 
 エンジンが別ホストのとき、接続先は環境変数 `KIKITORI_ENGINE` ではなく引数
 `--socket host:port` で渡すこと。`Spawn` は cosmic-comp の環境を継承するが、
 cosmic-comp は cosmic-greeter / cosmic-session 経由で起動されてログインシェルを
 通らず、`home.sessionVariables`（profile.d 経由）が届かない。届かないまま起動した
-クライアントはローカルソケットへの接続に失敗し、バーを出さないままプロセスだけが
-残る（接続失敗時に exit しない挙動）。`--socket` は `host:port` 形式を TCP と解釈する。
+クライアントはローカルソケットへの接続に失敗し、バーにエラーを出して終了する
+（猶予の後に非ゼロ終了。`client/src/bin/kikitori.rs` の `fatal`）。`--socket` は
+`host:port` 形式を TCP と解釈する。
 
 ## ネットワーク
 
@@ -76,8 +84,8 @@ cosmic-comp は cosmic-greeter / cosmic-session 経由で起動されてログ�
 - NixOS のファイアウォールは全インターフェース開放（`openFirewall = true`）にせず、
   `networking.firewall.interfaces."tailscale0".allowedTCPPorts = [ 41717 ];` のように
   インターフェースを限る
-- クライアントがエンジンに届かない間（tailnet の外など）は、バーを出さずに待機し
-  続けるため、無反応に見える
+- クライアントがエンジンに届かない間（tailnet の外など）は、録音を始められず、
+  バーに接続失敗のエラーを出して終了する
 
 ## 設計判断の置き場
 
