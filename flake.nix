@@ -189,13 +189,24 @@
         }:
         let
           cfg = config.services.kikitori;
-          pkg = self.packages.${pkgs.stdenv.hostPlatform.system}.kikitori;
+          pkg = cfg.package;
           setup = self.packages.${pkgs.stdenv.hostPlatform.system}.kikitori-setup;
           dataDir = "%h/.local/share/kikitori";
         in
         {
           options.services.kikitori = {
             enable = lib.mkEnableOption "kikitori 音声入力エンジン";
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.kikitori;
+              defaultText = lib.literalExpression "kikitori.packages.\${system}.kikitori";
+              description = ''
+                kikitori パッケージ。enable = false のホスト（エンジンを持たず
+                クライアントだけ使うホスト）でも、ショートカットから起動する
+                コマンドのパス（`lib.getExe config.services.kikitori.package`）を
+                得るために参照できる。overlay で pkgs.kikitori を足す必要はない。
+              '';
+            };
             tcp = lib.mkOption {
               type = lib.types.nullOr (lib.types.strMatching "[^[:space:]]+");
               default = null;
