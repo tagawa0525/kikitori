@@ -32,7 +32,9 @@ nixfiles では 2026-08〜10 に組み込んでいたが、使わなくなった
    ```
 
 初回起動時に `ExecStartPre` の `kikitori-setup` がモデル（約 200MB）を
-`~/.local/share/kikitori/` へ取得する。モデルは nix store に入れない。
+`${XDG_DATA_HOME:-~/.local/share}/kikitori/` へ取得する。モデルは nix store に入れない。
+サービスが読むのは `~/.local/share/kikitori/` に固定なので、`XDG_DATA_HOME` を
+`~/.local/share` 以外にすると取得先とずれて起動に失敗する（[#21](https://github.com/tagawa0525/kikitori/issues/21)）。
 
 ## overlay は要らない
 
